@@ -8,13 +8,14 @@
 # system Python (no venv, no conda) triggers the extra "will pollute" warning.
 #
 #   0. confirm the target Python environment (the active one)
-#   1. pip install vapoursynth + Python tooling (into the active env)
-#   2. `vapoursynth config` (+ conda libpython fallback + register-install)
+#   1. pip install vapoursynth + tooling, the source-plugin wheel, and the
+#      vs-mlrt TensorRT filter wheel (vapoursynth-mlrt-trt); then run
+#      `vapoursynth config` (+ conda libpython fallback + register-install)
 #      to set up plugin autoload
-#   3. source plugin via pip wheel (vapoursynth-lsmas); VSRepo is fallback only
-#   4. vs-mlrt TensorRT filter via pip wheel (vapoursynth-mlrt-trt)
-#   5. RealESRGAN + RIFE model packs
-#   6. install the vsr CLI itself + write config.toml
+#   2. verify a source plugin is present (pip wheel; VSRepo only as fallback)
+#   3. deploy vsmlrt.py (local checkout / git ref / release archive)
+#   4. RealESRGAN + RIFE model packs
+#   5. install the vsr CLI itself + write config.toml
 #
 # Usage:   bash setup.sh [RUNTIME_DIR]
 # Env overrides:
@@ -121,16 +122,22 @@ elif ! have ffmpeg; then
     NEED_APT+=(ffmpeg)
 fi
 if [[ ${#NEED_APT[@]} -gt 0 ]]; then
-    log "Installing system deps: ${NEED_APT[*]}"
-    apt_get update -y || true
-    # --no-install-recommends: the Ubuntu 'ffmpeg' package otherwise pulls a large
-    # GUI stack via Recommends (GTK3, mesa-vulkan, libllvm, icon themes, fonts,
-    # va/vdpau driver-all). We only need the codec libs + binary, so skip the
-    # recommends. (libavdevice still hard-depends on a few small X11 libs via
-    # libsdl2 — unavoidable with apt's ffmpeg.) If you want zero apt bloat, drop a
-    # static ffmpeg (e.g. BtbN build) on disk and point VSR_FFMPEG/--ffmpeg at it.
-    apt_get install -y --no-install-recommends "${NEED_APT[@]}" \
-        || err "apt install failed for: ${NEED_APT[*]}"
+    if [[ "${SKIP_APT:-0}" == "1" ]] || ! have apt-get; then
+        # apt_get is a silent no-op in this case, so installs wouldn't happen and
+        # the install-failure check below would never fire — surface it here.
+        err "Missing required tools: ${NEED_APT[*]} — but apt is unavailable (SKIP_APT=1 or no apt-get). Install them manually, then re-run."
+    else
+        log "Installing system deps: ${NEED_APT[*]}"
+        apt_get update -y || true
+        # --no-install-recommends: the Ubuntu 'ffmpeg' package otherwise pulls a large
+        # GUI stack via Recommends (GTK3, mesa-vulkan, libllvm, icon themes, fonts,
+        # va/vdpau driver-all). We only need the codec libs + binary, so skip the
+        # recommends. (libavdevice still hard-depends on a few small X11 libs via
+        # libsdl2 — unavoidable with apt's ffmpeg.) If you want zero apt bloat, drop a
+        # static ffmpeg (e.g. BtbN build) on disk and point VSR_FFMPEG/--ffmpeg at it.
+        apt_get install -y --no-install-recommends "${NEED_APT[@]}" \
+            || err "apt install failed for: ${NEED_APT[*]}"
+    fi
 fi
 SEVENZ="$(command -v 7z || command -v 7za || true)"
 [[ -z "$SEVENZ" ]] && err "7z/7za not found — needed to extract release archives."
@@ -415,174 +422,6 @@ raise SystemExit(1)
 PY
 }
 
-core_trt_version_key() {
-    "$PYTHON" - <<'PY' 2>/dev/null
-from vapoursynth import core
-
-if not hasattr(core, "trt"):
-    raise SystemExit(1)
-
-version = core.trt.Version()
-value = version.get("tensorrt_version_build") or version.get("tensorrt_version")
-if isinstance(value, bytes):
-    value = value.decode("ascii", "ignore")
-raw = int(str(value))
-print(f"{raw // 10000}.{(raw // 100) % 100}")
-PY
-}
-
-trtexec_version_key() {
-    local out path="$1"
-    out="$("$path" --version 2>&1 || true)"
-    if [[ -z "$out" ]]; then
-        out="$("$path" --help 2>&1 || true)"
-    fi
-    TRTEXEC_TEXT="$out" "$PYTHON" - <<'PY' 2>/dev/null
-import os
-import re
-
-text = os.environ.get("TRTEXEC_TEXT", "")
-match = re.search(r"TensorRT version:\s*(\d+)\.(\d+)(?:\.(\d+))?", text)
-if match:
-    print(f"{int(match.group(1))}.{int(match.group(2))}")
-    raise SystemExit(0)
-match = re.search(r"\[TensorRT v(\d+)\]", text)
-if match:
-    raw = int(match.group(1))
-    print(f"{raw // 10000}.{(raw // 100) % 100}")
-    raise SystemExit(0)
-raise SystemExit(1)
-PY
-}
-
-find_python_trtexec_candidates() {
-    "$PYTHON" - <<'PY' 2>/dev/null || true
-import os
-import site
-import sys
-from pathlib import Path
-
-roots = []
-
-
-def add_root(path):
-    if not path:
-        return
-    path = Path(path)
-    if path.exists() and path not in roots:
-        roots.append(path)
-
-
-for path in site.getsitepackages():
-    add_root(path)
-try:
-    add_root(site.getusersitepackages())
-except Exception:
-    pass
-
-for prefix in {Path(sys.prefix), Path(getattr(sys, "base_prefix", sys.prefix))}:
-    add_root(prefix / "bin")
-    for path in (prefix / "lib").glob("python*/site-packages"):
-        add_root(path)
-
-if os.environ.get("CONDA_PREFIX"):
-    conda_prefix = Path(os.environ["CONDA_PREFIX"])
-    add_root(conda_prefix / "bin")
-    if conda_prefix.parent.name == "envs":
-        base = conda_prefix.parent.parent
-        add_root(base / "bin")
-        for path in (base / "lib").glob("python*/site-packages"):
-            add_root(path)
-if os.environ.get("CONDA_EXE"):
-    base = Path(os.environ["CONDA_EXE"]).parent.parent
-    add_root(base / "bin")
-    for path in (base / "lib").glob("python*/site-packages"):
-        add_root(path)
-
-seen = set()
-for root in roots:
-    hits = [root / "trtexec"] if root.name == "bin" else sorted(root.rglob("trtexec"))
-    for path in hits:
-        if path.is_file() and os.access(path, os.X_OK):
-            text = str(path)
-            if text not in seen:
-                seen.add(text)
-                print(text)
-PY
-}
-
-find_trtexec() {
-    local cand runtime_key cand_key
-    local -a candidates=()
-    local -a mismatched=()
-
-    runtime_key="$(core_trt_version_key || true)"
-    if [[ -z "$runtime_key" ]]; then
-        err "core.trt is unavailable; skipping trtexec auto-detection."
-        err "Install $MLRT_TRT_PACKAGE successfully first, then set VSR_TRTEXEC if needed."
-        return 1
-    fi
-
-    add_trtexec_candidate() {
-        local path="$1"
-        [[ -n "$path" && -x "$path" ]] || return 0
-        for cand in "${candidates[@]}"; do
-            [[ "$cand" == "$path" ]] && return 0
-        done
-        candidates+=("$path")
-    }
-
-    if [[ -n "${VSR_TRTEXEC:-}" ]]; then
-        if [[ -x "$VSR_TRTEXEC" ]]; then
-            cand_key="$(trtexec_version_key "$VSR_TRTEXEC" || true)"
-            if [[ -n "$runtime_key" && -n "$cand_key" && "$runtime_key" != "$cand_key" ]]; then
-                err "VSR_TRTEXEC uses TensorRT $cand_key, but core.trt uses TensorRT $runtime_key."
-                err "A mismatched trtexec builds engines that core.trt cannot deserialize."
-                return 1
-            fi
-            printf '%s\n' "$VSR_TRTEXEC"
-            return 0
-        fi
-        err "VSR_TRTEXEC is set but not executable: $VSR_TRTEXEC"
-    fi
-
-    add_trtexec_candidate "$PYBIN_DIR/trtexec"
-    add_trtexec_candidate "$PY_PREFIX/bin/trtexec"
-    add_trtexec_candidate "${CONDA_PREFIX:-}/bin/trtexec"
-    add_trtexec_candidate "${VIRTUAL_ENV:-}/bin/trtexec"
-    add_trtexec_candidate "${TENSORRT_HOME:-}/bin/trtexec"
-    add_trtexec_candidate "${TRT_HOME:-}/bin/trtexec"
-    add_trtexec_candidate "/usr/src/tensorrt/bin/trtexec"
-    add_trtexec_candidate "/usr/local/tensorrt/bin/trtexec"
-    add_trtexec_candidate "/usr/local/TensorRT/bin/trtexec"
-
-    while IFS= read -r cand; do
-        add_trtexec_candidate "$cand"
-    done < <(find_python_trtexec_candidates)
-
-    cand="$(command -v trtexec 2>/dev/null || true)"
-    add_trtexec_candidate "$cand"
-
-    for cand in "${candidates[@]}"; do
-        cand_key="$(trtexec_version_key "$cand" || true)"
-        if [[ -z "$runtime_key" || -z "$cand_key" || "$runtime_key" == "$cand_key" ]]; then
-            printf '%s\n' "$cand"
-            return 0
-        fi
-        mismatched+=("$cand (TensorRT $cand_key)")
-    done
-
-    if [[ -n "$runtime_key" && "${#mismatched[@]}" -gt 0 ]]; then
-        err "Found trtexec, but none match core.trt TensorRT $runtime_key:"
-        for cand in "${mismatched[@]}"; do
-            err "  $cand"
-        done
-        err "Install a matching TensorRT CLI or set VSR_TRTEXEC to it."
-    fi
-
-    return 1
-}
-
 extend_ld_library_path_for_python_libs() {
     local lib_dirs dir updated=0
 
@@ -760,7 +599,7 @@ VSPIPE_BIN="$PYBIN_DIR/vspipe"
 [[ -n "$VSPIPE_BIN" && -x "$VSPIPE_BIN" ]] || err "vspipe not found next to $PYTHON — some VapourSynth wheels omit it; check the install."
 log "vspipe: $VSPIPE_BIN"
 
-# --- 3. source plugin check; VSRepo only as fallback ------------------------
+# --- 2. source plugin check; VSRepo only as fallback ------------------------
 SRC_OK=0
 if SOURCE_AVAILABLE="$(probe_source_filter)"; then
     log "Source plugin available: $SOURCE_AVAILABLE"
@@ -918,7 +757,7 @@ download_and_extract() {
     esac
 }
 
-# --- 4. vsmlrt.py script (filter backend comes from pip wheel) -------------
+# --- 3. vsmlrt.py script (filter backend comes from pip wheel) -------------
 # Do not download vsmlrt-cuda.* here: current release assets are Windows
 # .dll/.exe bundles and are useless for the Linux TensorRT wheel route.
 #
@@ -963,7 +802,7 @@ else
     }
 fi
 
-# --- 5. model packs ---------------------------------------------------------
+# --- 4. model packs ---------------------------------------------------------
 # vs-mlrt model archives contain a top-level `models/` directory. Extracting
 # into MODELS_DIR (.../vs-plugins/models) would nest them as models/models/…,
 # which `vsr doctor` / vsmlrt.models_path can't find. Extract, then flatten any
@@ -983,7 +822,7 @@ else
     fi
 fi
 
-# --- 6. install vsr CLI + write config -------------------------------------
+# --- 5. install vsr CLI + write config -------------------------------------
 log "Installing vsr CLI into the active environment…"
 "$PYTHON" -m pip install -e "$SCRIPT_DIR"
 
@@ -996,12 +835,21 @@ else
     FFMPEG_BIN="$(command -v ffmpeg || echo ffmpeg)"
 fi
 PIPELINE_VPY="$SCRIPT_DIR/pipeline.vpy"
-TRTEXEC_BIN="$(find_trtexec || true)"
+# trtexec detection (candidate paths, TensorRT version probe, and engine-ABI
+# matching against core.trt) lives in vsr.config — the single source of truth
+# the CLI itself uses at runtime. The vsr package is installed just above, so we
+# resolve through it instead of duplicating the logic in bash. It honors
+# VSR_TRTEXEC and returns "" when no compatible trtexec is found.
+TRTEXEC_BIN="$("$PYTHON" - <<PY 2>/dev/null || true
+from vsr.config import RuntimeConfig, resolve
+print(resolve(RuntimeConfig(plugins_dir="$PLUGINS_DIR", models_dir="$MODELS_DIR")).trtexec or "")
+PY
+)"
 if [[ -n "$TRTEXEC_BIN" ]]; then
     log "trtexec: $TRTEXEC_BIN"
 else
     err "Compatible trtexec not found. build-engines requires trtexec TensorRT to match core.trt."
-    err "Install a matching Linux TensorRT CLI or set VSR_TRTEXEC to the matching binary."
+    err "Install a matching Linux TensorRT CLI or set VSR_TRTEXEC to the matching binary. (Run 'vsr doctor' for the exact mismatch.)"
 fi
 
 {
