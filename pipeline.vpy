@@ -5,7 +5,7 @@ Run via vspipe, passing parameters with --arg key=value, e.g.:
     vspipe -c y4m \
         --arg video_path=/in.mkv \
         --arg upscale=1 --arg model=animejanaiV3_HD_L2 \
-        --arg rife=1 --arg rife_multi=2 --arg rife_model=v4_22 \
+        --arg rife=1 --arg rife_multi=2 --arg rife_model=v4_10 \
         pipeline.vpy -
 
 Builds the processing graph conditionally:
@@ -158,6 +158,13 @@ use_fp16 = _arg_bool("fp16", True)
 def _trt_backend():
     return vsmlrt.Backend.TRT(
         fp16=use_fp16,
+        # On TensorRT >= 11 the vsmlrt path pre-converts the ONNX to fp16 and
+        # requires the engine's input and output formats to be equal. The input
+        # format is derived from the clip's bit depth, and we feed RGBH (fp16)
+        # whenever fp16 is enabled, so the output format must be fp16 too;
+        # otherwise convert_model raises "input format must be equal to output
+        # format". (When fp16 is off, vsmlrt skips this path, so 0 is fine.)
+        output_format=1 if use_fp16 else 0,
         num_streams=num_streams,
         use_cuda_graph=True,
         device_id=device_id,
@@ -241,7 +248,7 @@ if do_upscale:
 
 if do_rife:
     rife_multi = _arg_fraction("rife_multi", 2)
-    rife_model_name = _arg("rife_model", "v4_22")
+    rife_model_name = _arg("rife_model", "v4_10")
     try:
         rife_model = vsmlrt.RIFEModel[rife_model_name]
     except KeyError:
@@ -250,12 +257,23 @@ if do_rife:
             f"pipeline.vpy: unknown RIFE model {rife_model_name!r}; valid: {valid}"
         )
     rife_clip = _to_rgb(clip, vs.RGBH)
+    # vsmlrt.RIFE (v1 implementation) requires the frame dimensions to be a
+    # multiple of 32 and does not pad internally — a 4K upscale yields 3840x2160
+    # and 2160 % 32 != 0, which raises "tile size must be divisible by 32". Pad
+    # the right/bottom edges up to the next multiple of 32, then crop back so the
+    # output keeps the source resolution.
+    pad_w = (32 - rife_clip.width % 32) % 32
+    pad_h = (32 - rife_clip.height % 32) % 32
+    if pad_w or pad_h:
+        rife_clip = core.std.AddBorders(rife_clip, right=pad_w, bottom=pad_h)
     rife_clip = vsmlrt.RIFE(
         rife_clip,
         multi=rife_multi,
         model=rife_model,
         backend=_trt_backend(),
     )
+    if pad_w or pad_h:
+        rife_clip = core.std.Crop(rife_clip, right=pad_w, bottom=pad_h)
     clip = _to_yuv(rife_clip)
 
 

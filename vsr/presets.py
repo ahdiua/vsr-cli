@@ -46,6 +46,7 @@ DEFAULT_REALESRGAN_MODEL = "animejanaiV3_HD_L2"
 RIFE_MODELS: dict[str, str] = {
     "v4_4": "RIFE v4.4",
     "v4_6": "RIFE v4.6",
+    "v4_10": "RIFE v4.10",
     "v4_15": "RIFE v4.15",
     "v4_18": "RIFE v4.18",
     "v4_22": "RIFE v4.22",
@@ -55,7 +56,10 @@ RIFE_MODELS: dict[str, str] = {
     "v4_25_lite": "RIFE v4.25 lite (fast)",
 }
 
-DEFAULT_RIFE_MODEL = "v4_22"
+# v4_10 is the newest RIFE model shipped in the standard vs-mlrt `models` pack
+# (and even the v16.test1 prerelease `contrib-models` pack tops out here); newer
+# versions like v4.22 are not bundled, so default to one that always extracts.
+DEFAULT_RIFE_MODEL = "v4_10"
 
 
 def encoder_args(name: str) -> str:

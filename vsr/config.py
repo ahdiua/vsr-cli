@@ -17,6 +17,7 @@ The runtime consists of:
 from __future__ import annotations
 
 import os
+import re
 import site
 import shutil
 import subprocess
@@ -93,6 +94,95 @@ def _which(name: str) -> str | None:
     return shutil.which(name)
 
 
+def _compact_trt_version(value: str | bytes | int | None) -> tuple[int, int, int] | None:
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        value = value.decode("ascii", "ignore")
+    text = str(value).strip()
+    if not text.isdigit():
+        return None
+    raw = int(text)
+    return raw // 10000, (raw // 100) % 100, raw % 100
+
+
+def _format_trt_version(version: tuple[int, int, int] | None) -> str:
+    if not version:
+        return "unknown"
+    return ".".join(str(part) for part in version)
+
+
+def _parse_trtexec_version(text: str) -> tuple[int, int, int] | None:
+    match = re.search(r"TensorRT version:\s*(\d+)\.(\d+)(?:\.(\d+))?", text)
+    if match:
+        return (
+            int(match.group(1)),
+            int(match.group(2)),
+            int(match.group(3) or 0),
+        )
+    match = re.search(r"TensorRT(?:\.trtexec)?\s*\[TensorRT v(\d+)\]", text)
+    if match:
+        return _compact_trt_version(match.group(1))
+    match = re.search(r"\[TensorRT v(\d+)\]", text)
+    if match:
+        return _compact_trt_version(match.group(1))
+    return None
+
+
+def _probe_core_trt_version(plugins_dir: str | None) -> tuple[int, int, int] | None:
+    code = """
+from vapoursynth import core
+if not hasattr(core, "trt"):
+    raise SystemExit(1)
+version = core.trt.Version()
+value = version.get("tensorrt_version_build") or version.get("tensorrt_version")
+if isinstance(value, bytes):
+    value = value.decode("ascii", "ignore")
+print(value)
+"""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            env=env_with_runtime_libs(plugins_dir),
+            text=True,
+            timeout=20,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    return _compact_trt_version((result.stdout or "").strip())
+
+
+def _probe_trtexec_version(path: str | Path) -> tuple[int, int, int] | None:
+    path = str(path)
+    for arg in ("--version", "--help"):
+        try:
+            result = subprocess.run(
+                [path, arg],
+                capture_output=True,
+                env=env_with_runtime_libs(None),
+                text=True,
+                timeout=10,
+            )
+        except Exception:
+            continue
+        version = _parse_trtexec_version((result.stdout or "") + "\n" + (result.stderr or ""))
+        if version:
+            return version
+    return None
+
+
+def _same_trt_engine_abi(
+    runtime: tuple[int, int, int] | None,
+    builder: tuple[int, int, int] | None,
+) -> bool:
+    if not runtime or not builder:
+        return True
+    return runtime[:2] == builder[:2]
+
+
 def _autodetect_vspipe() -> str | None:
     # On the conda-forge install, vspipe lives next to the python interpreter.
     cand = Path(sys.executable).parent / ("vspipe.exe" if os.name == "nt" else "vspipe")
@@ -110,6 +200,7 @@ def _autodetect_models(plugins_dir: str | None) -> str | None:
 
 
 def _autodetect_trtexec(plugins_dir: str | None) -> str | None:
+    runtime_version = _probe_core_trt_version(plugins_dir)
     candidates: list[Path] = [
         Path(sys.executable).parent / ("trtexec.exe" if os.name == "nt" else "trtexec"),
         Path(sys.prefix) / "bin" / "trtexec",
@@ -128,20 +219,27 @@ def _autodetect_trtexec(plugins_dir: str | None) -> str | None:
         ]
     )
 
+    for root in _python_package_roots():
+        if root.is_dir():
+            candidates.extend(sorted(p for p in root.rglob("trtexec") if p.is_file()))
+
     for candidate in candidates:
-        if candidate.is_file():
+        if not candidate.is_file():
+            continue
+        if _same_trt_engine_abi(runtime_version, _probe_trtexec_version(candidate)):
             return str(candidate)
 
     path_hit = _which("trtexec")
-    if path_hit:
+    if path_hit and _same_trt_engine_abi(runtime_version, _probe_trtexec_version(path_hit)):
         return path_hit
 
     if plugins_dir:
         root = Path(plugins_dir)
         if root.is_dir():
             hits = sorted(p for p in root.rglob("trtexec") if p.is_file())
-            if hits:
-                return str(hits[0])
+            for hit in hits:
+                if _same_trt_engine_abi(runtime_version, _probe_trtexec_version(hit)):
+                    return str(hit)
 
     return None
 
@@ -157,6 +255,46 @@ _SHARED_LIB_PATTERNS = (
     "libnvrtc*.so*",
     "libtensorrt*.so*",
 )
+
+
+def _python_package_roots() -> list[Path]:
+    roots: list[Path] = []
+
+    def add_root(path: str | Path | None) -> None:
+        if not path:
+            return
+        root = Path(path)
+        if root.exists() and root not in roots:
+            roots.append(root)
+
+    for path in (sys.prefix, getattr(sys, "base_prefix", sys.prefix)):
+        add_root(Path(path) / "lib")
+    for env_name in ("CONDA_PREFIX", "VIRTUAL_ENV"):
+        if os.environ.get(env_name):
+            add_root(Path(os.environ[env_name]) / "lib")
+
+    if os.environ.get("CONDA_PREFIX"):
+        conda_prefix = Path(os.environ["CONDA_PREFIX"])
+        if conda_prefix.parent.name == "envs":
+            add_root(conda_prefix.parent.parent / "lib")
+    if os.environ.get("CONDA_EXE"):
+        add_root(Path(os.environ["CONDA_EXE"]).parent.parent / "lib")
+    prefix = Path(sys.prefix)
+    if prefix.parent.name == "envs":
+        add_root(prefix.parent.parent / "lib")
+
+    try:
+        for path in site.getsitepackages():
+            add_root(path)
+    except Exception:
+        pass
+
+    try:
+        add_root(site.getusersitepackages())
+    except Exception:
+        pass
+
+    return roots
 
 
 def _python_shared_lib_dirs() -> list[Path]:
@@ -271,8 +409,11 @@ from vapoursynth import core
 ns = {namespace!r}
 if not hasattr(core, ns):
     raise SystemExit(f"missing core.{{ns}}")
-version = getattr(core, ns).Version()
-print(version)
+plugin = getattr(core, ns)
+try:
+    print(plugin.Version())
+except Exception:
+    print("available")
 """
     try:
         result = subprocess.run(
@@ -287,6 +428,32 @@ print(version)
 
     detail = (result.stdout or result.stderr).strip()
     return result.returncode == 0, detail or f"exit {result.returncode}"
+
+
+def trtexec_compatibility(cfg: RuntimeConfig) -> tuple[bool, str]:
+    if not cfg.trtexec:
+        return False, "not found; install matching Linux TensorRT CLI or set VSR_TRTEXEC"
+    path = Path(cfg.trtexec)
+    if not path.is_file():
+        return False, f"{cfg.trtexec} does not exist"
+
+    runtime_version = _probe_core_trt_version(cfg.plugins_dir)
+    builder_version = _probe_trtexec_version(path)
+    if not runtime_version:
+        return True, f"{cfg.trtexec} (core.trt TensorRT version unknown)"
+    if not builder_version:
+        return True, f"{cfg.trtexec} (trtexec TensorRT version unknown)"
+    if _same_trt_engine_abi(runtime_version, builder_version):
+        return True, (
+            f"{cfg.trtexec} "
+            f"(trtexec TensorRT {_format_trt_version(builder_version)}, "
+            f"core.trt {_format_trt_version(runtime_version)})"
+        )
+    return False, (
+        f"{cfg.trtexec} uses TensorRT {_format_trt_version(builder_version)}, "
+        f"but core.trt uses TensorRT {_format_trt_version(runtime_version)}. "
+        "Use a matching trtexec or delete trtexec from config.toml."
+    )
 
 
 def resolve(cfg: RuntimeConfig, **overrides: object) -> RuntimeConfig:
@@ -351,9 +518,7 @@ def diagnose(cfg: RuntimeConfig) -> list[tuple[str, bool, str]]:
     trt_ok, trt_detail = _probe_vapoursynth_namespace(cfg, "trt")
     checks.append(("core.trt", trt_ok, trt_detail))
 
-    trtexec_ok = bool(cfg.trtexec) and Path(cfg.trtexec).is_file()
-    trtexec_detail = cfg.trtexec or "not found; install Linux TensorRT CLI or set VSR_TRTEXEC"
-    checks.append(("trtexec", trtexec_ok, trtexec_detail))
+    checks.append(("trtexec", *trtexec_compatibility(cfg)))
 
     nvsmi = _which("nvidia-smi")
     checks.append(("nvidia-smi", bool(nvsmi), nvsmi or "not found"))

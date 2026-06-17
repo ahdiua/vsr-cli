@@ -16,7 +16,7 @@ from pathlib import Path
 from rich.console import Console
 
 from . import presets
-from .config import RuntimeConfig, env_with_runtime_libs
+from .config import RuntimeConfig, env_with_runtime_libs, trtexec_compatibility
 
 console = Console()
 
@@ -119,6 +119,11 @@ def build_vspipe_env(cfg: RuntimeConfig) -> dict[str, str]:
 def run_job(cfg: RuntimeConfig, job: Job, quiet: bool = False) -> int:
     """Run vspipe | ffmpeg for one job. Returns 0 on success."""
     job.validate()
+    ok, detail = trtexec_compatibility(cfg)
+    if not ok:
+        console.print(f"[red]TensorRT builder mismatch:[/red] {detail}")
+        console.print("[yellow]If a wrong engine was already built, delete the matching *.engine and *.engine.cache files before retrying.[/yellow]")
+        return 2
     Path(job.output_path).parent.mkdir(parents=True, exist_ok=True)
 
     vspipe_cmd = build_vspipe_cmd(cfg, job)
@@ -160,6 +165,11 @@ def build_engines(cfg: RuntimeConfig, job: Job) -> int:
     warm.output_path = "-"  # placeholder; replaced below with null sink
 
     job.validate()
+    ok, detail = trtexec_compatibility(cfg)
+    if not ok:
+        console.print(f"[red]TensorRT builder mismatch:[/red] {detail}")
+        console.print("[yellow]If a wrong engine was already built, delete the matching *.engine and *.engine.cache files before retrying.[/yellow]")
+        return 2
     vspipe_cmd = build_vspipe_cmd(cfg, warm)
     vspipe_env = build_vspipe_env(cfg)
     # discard pipe output entirely — we only want the engine .engine files built
