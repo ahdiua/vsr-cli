@@ -31,39 +31,51 @@ TensorRT engine 由 `vsmlrt.Backend.TRT` 自动构建并缓存（首次运行较
 
 > VideoJaNai 的 `backend` 是 **Windows** 便携包，**无法**直接在 Linux 运行。Linux 需用 vs-mlrt 的 Linux x64 release 自建运行时——`setup.sh` 已自动化这一过程。
 
-**不使用 conda**：按 VapourSynth 官方推荐，用系统 Python 3.12+ 的 venv + `pip install vapoursynth`，源插件用 VSRepo 安装。
+**不使用 conda**：按 VapourSynth 官方推荐，用 Python 3.12+ venv + `pip install vapoursynth`，源插件用 VSRepo 安装。
 
-前置：容器内有 NVIDIA GPU、`curl`。Python 3.12+ 若缺失，`setup.sh` 会自动经 deadsnakes PPA 安装（可用 `SKIP_PYTHON_INSTALL=1` 关闭）。
+> **默认安装进“当前已激活的环境”**。`setup.sh` 启动时会打印目标 Python/venv 并**要求输入 `y` 确认**才继续；若未检测到 venv（会污染系统 Python）会额外警告。
+
+前置：自己先建好并激活 venv（Python 3.12+），容器内有 NVIDIA GPU、`curl`。
 
 ```bash
-# 一键搭建运行时（venv + pip 装 VapourSynth/VSRepo/源插件
-#   + 下载 vs-mlrt Linux 插件/trtexec + 模型 + 安装 vsr 本体）
-cd vsr-cli
-bash setup.sh            # 默认装到 /root/autodl-tmp/vsr-runtime
-#   可选环境变量:
-#   VSR_RUNTIME=/path     运行时目录
-#   PY_BIN=/usr/bin/python3.12   指定 Python 解释器
-#   VSMLRT_TAG=v15.x      指定 vs-mlrt release tag（默认 latest）
-#   MODEL_PACKS="RealESRGANv2 rife"   要下载的模型包
-#   SOURCE_PLUGIN="lsmas ffms2"       VSRepo 源插件（按序尝试）
-#   GITHUB_TOKEN=...      提高 GitHub API 速率限制
-#   SKIP_PYTHON_INSTALL=1 / SKIP_APT=1
+# 1. 自己准备 venv（Python 3.12+）并激活
+python3.12 -m venv ~/vsr-venv && source ~/vsr-venv/bin/activate
 
-# 激活 venv 后自检 + 预热 engine
-source /root/autodl-tmp/vsr-runtime/venv/bin/activate
+# 2. 一键搭建运行时（装进当前 venv：VapourSynth/VSRepo/源插件
+#    + 下载 vs-mlrt Linux 插件/trtexec + 模型 + 安装 vsr 本体）
+cd vsr-cli
+bash setup.sh            # 运行时默认装到 /root/autodl-tmp/vsr-runtime
+#   启动后输入 y 确认目标环境
+
+# 3. 自检 + 预热 engine
 vsr doctor
 vsr build-engines -i sample.mkv --upscale --model animejanaiV3_HD_L2 --rife --rife-multi 2
 ```
 
+可选环境变量：
+
+| 变量 | 作用 |
+| --- | --- |
+| `ASSUME_YES=1` | 跳过确认提示（非交互） |
+| `CREATE_VENV=1` | 不用当前环境，改为在 `<runtime>/venv` 新建并使用一个 venv（缺 Python 3.12 时经 deadsnakes 自动装） |
+| `PY_BIN=/path/python` | 指定解释器（默认用当前 `python`） |
+| `VSR_RUNTIME=/path` | 运行时目录 |
+| `VSMLRT_TAG=v15.x` | 指定 vs-mlrt release tag（默认 latest） |
+| `MODEL_PACKS="RealESRGANv2 rife"` | 要下载的模型包 |
+| `SOURCE_PLUGIN="lsmas ffms2"` | VSRepo 源插件（按序尝试） |
+| `GITHUB_TOKEN=...` | 提高 GitHub API 速率限制 |
+| `SKIP_APT=1` / `SKIP_PYTHON_INSTALL=1` | 关闭 apt / 关闭自动装 Python（仅 `CREATE_VENV`） |
+
 `setup.sh` 步骤：
-1. 选/装 **Python 3.12+** → 建 venv → `pip install vapoursynth vsrepo onnx numpy onnxconverter-common`
+0. 打印目标环境并**确认 `y`**
+1. `pip install vapoursynth vsrepo onnx numpy onnxconverter-common`（装进当前/指定环境）
 2. `vapoursynth config`（+ `register-install`）配置插件自动加载
 3. **VSRepo** 安装源插件（`lsmas` 优先，回退 `ffms2`）
 4. 下载 **vs-mlrt** Linux 插件（vsort/vstrt + vsmlrt-cuda/trtexec）到 `plugins/`
 5. 下载 **模型包**（RealESRGAN / RIFE）
 6. `pip install -e` 安装 `vsr` 本体，写 `~/.config/vsr/config.toml`
 
-整个 `运行时目录`（含 venv + 插件 + 模型）可 `tar` 打包，在其它容器解压复用（venv 路径变了需重建或改用系统 Python）。
+运行时目录（插件 + 模型）可 `tar` 打包复用；Python 依赖在你自己的 venv 中。
 
 ---
 
