@@ -167,6 +167,7 @@ def _trt_backend():
         output_format=1 if use_fp16 else 0,
         num_streams=num_streams,
         use_cuda_graph=True,
+        builder_optimization_level=5,
         device_id=device_id,
     )
 
