@@ -31,29 +31,39 @@ TensorRT engine 由 `vsmlrt.Backend.TRT` 自动构建并缓存（首次运行较
 
 > VideoJaNai 的 `backend` 是 **Windows** 便携包，**无法**直接在 Linux 运行。Linux 需用 vs-mlrt 的 Linux x64 release 自建运行时——`setup.sh` 已自动化这一过程。
 
-前置：容器内有 NVIDIA GPU、`conda`（Miniconda）、`curl`。
+**不使用 conda**：按 VapourSynth 官方推荐，用系统 Python 3.12+ 的 venv + `pip install vapoursynth`，源插件用 VSRepo 安装。
+
+前置：容器内有 NVIDIA GPU、`curl`。Python 3.12+ 若缺失，`setup.sh` 会自动经 deadsnakes PPA 安装（可用 `SKIP_PYTHON_INSTALL=1` 关闭）。
 
 ```bash
-# 1. 安装本工具
+# 一键搭建运行时（venv + pip 装 VapourSynth/VSRepo/源插件
+#   + 下载 vs-mlrt Linux 插件/trtexec + 模型 + 安装 vsr 本体）
 cd vsr-cli
-pip install -e .
-
-# 2. 一键搭建运行时（conda 装 VapourSynth/源插件 + 下载 vs-mlrt Linux 插件/trtexec + 模型）
 bash setup.sh            # 默认装到 /root/autodl-tmp/vsr-runtime
 #   可选环境变量:
 #   VSR_RUNTIME=/path     运行时目录
+#   PY_BIN=/usr/bin/python3.12   指定 Python 解释器
 #   VSMLRT_TAG=v15.x      指定 vs-mlrt release tag（默认 latest）
 #   MODEL_PACKS="RealESRGANv2 rife"   要下载的模型包
+#   SOURCE_PLUGIN="lsmas ffms2"       VSRepo 源插件（按序尝试）
 #   GITHUB_TOKEN=...      提高 GitHub API 速率限制
+#   SKIP_PYTHON_INSTALL=1 / SKIP_APT=1
 
-# 3. 自检
+# 激活 venv 后自检 + 预热 engine
+source /root/autodl-tmp/vsr-runtime/venv/bin/activate
 vsr doctor
-
-# 4. 预构建 TensorRT engine（可选，避免首跑卡顿）
 vsr build-engines -i sample.mkv --upscale --model animejanaiV3_HD_L2 --rife --rife-multi 2
 ```
 
-`setup.sh` 会把所有路径写入 `~/.config/vsr/config.toml`。整个 `运行时目录` 可 `tar` 打包，在其它容器解压并改 `config.toml` 路径即可复用。
+`setup.sh` 步骤：
+1. 选/装 **Python 3.12+** → 建 venv → `pip install vapoursynth vsrepo onnx numpy onnxconverter-common`
+2. `vapoursynth config`（+ `register-install`）配置插件自动加载
+3. **VSRepo** 安装源插件（`lsmas` 优先，回退 `ffms2`）
+4. 下载 **vs-mlrt** Linux 插件（vsort/vstrt + vsmlrt-cuda/trtexec）到 `plugins/`
+5. 下载 **模型包**（RealESRGAN / RIFE）
+6. `pip install -e` 安装 `vsr` 本体，写 `~/.config/vsr/config.toml`
+
+整个 `运行时目录`（含 venv + 插件 + 模型）可 `tar` 打包，在其它容器解压复用（venv 路径变了需重建或改用系统 Python）。
 
 ---
 

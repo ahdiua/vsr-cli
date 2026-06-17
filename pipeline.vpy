@@ -87,8 +87,15 @@ if not (do_upscale or do_rife):
 plugins_dir = _arg("plugins_dir")
 models_dir = _arg("models_dir")
 
+# vs-mlrt inference plugins + common source plugins (ffms2 / L-SMASH-Works).
+# Source plugins are normally autoloaded (installed via VSRepo); loading them
+# again here is harmless (vs.Error is caught) and lets users instead just drop
+# the .so into plugins_dir.
 _PLUGIN_PREFIXES = ("libvstrt", "libvsort", "libvsov", "libvsncnn",
-                    "vstrt", "vsort", "vsov", "vsncnn")
+                    "vstrt", "vsort", "vsov", "vsncnn",
+                    "libffms2", "ffms2",
+                    "liblsmashsource", "libvslsmashsource", "lsmas",
+                    "libbestsource", "bestsource", "libbs")
 _PLUGIN_SUFFIXES = (".so", ".dll")
 
 
