@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Runtime / config (machine-specific)
+config.toml
+*.engine
+*.engine.cache
+*.onnx
+
+# OS
+.DS_Store
+Thumbs.db
