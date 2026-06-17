@@ -20,6 +20,7 @@ animejanai_core.py to avoid color drift through the ML models.
 
 import fractions
 import os
+import shutil
 import sys
 
 import vapoursynth as vs
@@ -79,16 +80,17 @@ if not (do_upscale or do_rife):
         "(both disabled produces no work)"
     )
 
-# --- load vs-mlrt plugins + import vsmlrt -----------------------------------
-# The vs-mlrt plugins usually live in a non-autoload dir, and vsmlrt.py derives
-# its paths from a loaded plugin. So load the .so files and add vsmlrt.py to
-# sys.path BEFORE importing vsmlrt, then override its paths explicitly.
+# --- load optional plugins + import vsmlrt ----------------------------------
+# The TensorRT filter should normally be autoloaded from the
+# vapoursynth-mlrt-trt wheel. plugins_dir is still used for vsmlrt.py, models,
+# and optional manually dropped Linux .so files.
 
 plugins_dir = _arg("plugins_dir")
 models_dir = _arg("models_dir")
+trtexec_path = _arg("trtexec_path")
 
 # vs-mlrt inference plugins + common source plugins (ffms2 / L-SMASH-Works).
-# Source plugins are normally autoloaded (installed via VSRepo); loading them
+# Source plugins are normally autoloaded (installed via pip/VSRepo); loading them
 # again here is harmless (vs.Error is caught) and lets users instead just drop
 # the .so into plugins_dir.
 _PLUGIN_PREFIXES = ("libvstrt", "libvsort", "libvsov", "libvsncnn",
@@ -96,17 +98,36 @@ _PLUGIN_PREFIXES = ("libvstrt", "libvsort", "libvsov", "libvsncnn",
                     "libffms2", "ffms2",
                     "liblsmashsource", "libvslsmashsource", "lsmas",
                     "libbestsource", "bestsource", "libbs")
-_PLUGIN_SUFFIXES = (".so", ".dll")
+_PLUGIN_SUFFIXES = (".so",)
+_MLRT_NAMESPACES = ("trt", "trt_rtx", "ort", "ov", "ncnn", "migx")
 
 
 def _load_mlrt_plugins(pdir):
+    attempts = []
+    loaded = []
+
     for root, _dirs, files in os.walk(pdir):
         for fn in files:
             if fn.startswith(_PLUGIN_PREFIXES) and fn.endswith(_PLUGIN_SUFFIXES):
+                path = os.path.join(root, fn)
+                attempts.append(path)
                 try:
-                    core.std.LoadPlugin(path=os.path.join(root, fn))
-                except vs.Error:
-                    pass  # already autoloaded / not a plugin — ignore
+                    core.std.LoadPlugin(path=path)
+                    loaded.append(path)
+                except vs.Error as exc:
+                    attempts[-1] = f"{path}: {exc}"
+
+    if not any(hasattr(core, ns) for ns in _MLRT_NAMESPACES):
+        detail = "\n  ".join(attempts[:20]) if attempts else "no candidate Linux .so files found"
+        raise RuntimeError(
+            "pipeline.vpy: no vs-mlrt runtime plugin available. "
+            "Install vapoursynth-mlrt-trt and make sure TensorRT/CUDA library "
+            "directories are present in LD_LIBRARY_PATH.\n"
+            f"plugins_dir={pdir}\n"
+            f"attempts:\n  {detail}"
+        )
+
+    return loaded
 
 
 if plugins_dir:
@@ -118,8 +139,12 @@ import vsmlrt  # noqa: E402  (must follow plugin loading)
 
 if plugins_dir:
     vsmlrt.plugins_path = plugins_dir
-    vsmlrt.trtexec_path = os.path.join(plugins_dir, "vsmlrt-cuda", "trtexec")
-    vsmlrt.tensorrt_rtx_path = os.path.join(plugins_dir, "vsmlrt-cuda", "tensorrt_rtx")
+if trtexec_path:
+    vsmlrt.trtexec_path = trtexec_path
+else:
+    detected_trtexec = shutil.which("trtexec")
+    if detected_trtexec:
+        vsmlrt.trtexec_path = detected_trtexec
 if models_dir:
     vsmlrt.models_path = models_dir
 elif plugins_dir:

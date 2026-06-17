@@ -6,8 +6,9 @@ Resolution priority for each runtime path:
 The runtime consists of:
   - vspipe          : the VapourSynth pipe executable
   - ffmpeg          : ffmpeg executable
-  - plugins dir     : VapourSynth plugins dir holding vstrt + vsmlrt-cuda + models
+  - plugins dir     : vsmlrt.py, models, and optional manually dropped VS plugins
   - models dir      : usually <plugins>/models, holding RealESRGANv2/ and rife/
+  - trtexec         : optional Linux TensorRT engine builder executable
   - pipeline.vpy    : shipped next to this repo
 
 ``setup.sh`` writes an initial config.toml after provisioning the runtime.
@@ -16,7 +17,9 @@ The runtime consists of:
 from __future__ import annotations
 
 import os
+import site
 import shutil
+import subprocess
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -59,6 +62,7 @@ class RuntimeConfig:
     ffmpeg: str = "ffmpeg"
     plugins_dir: str = ""
     models_dir: str = ""
+    trtexec: str = ""
     pipeline_vpy: str = ""
     # defaults
     encoder: str = presets.DEFAULT_ENCODER
@@ -105,10 +109,190 @@ def _autodetect_models(plugins_dir: str | None) -> str | None:
     return None
 
 
+def _autodetect_trtexec(plugins_dir: str | None) -> str | None:
+    candidates: list[Path] = [
+        Path(sys.executable).parent / ("trtexec.exe" if os.name == "nt" else "trtexec"),
+        Path(sys.prefix) / "bin" / "trtexec",
+    ]
+    for env_name in ("CONDA_PREFIX", "VIRTUAL_ENV"):
+        if os.environ.get(env_name):
+            candidates.append(Path(os.environ[env_name]) / "bin" / "trtexec")
+    for env_name in ("TENSORRT_HOME", "TRT_HOME"):
+        if os.environ.get(env_name):
+            candidates.append(Path(os.environ[env_name]) / "bin" / "trtexec")
+    candidates.extend(
+        [
+            Path("/usr/src/tensorrt/bin/trtexec"),
+            Path("/usr/local/tensorrt/bin/trtexec"),
+            Path("/usr/local/TensorRT/bin/trtexec"),
+        ]
+    )
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+
+    path_hit = _which("trtexec")
+    if path_hit:
+        return path_hit
+
+    if plugins_dir:
+        root = Path(plugins_dir)
+        if root.is_dir():
+            hits = sorted(p for p in root.rglob("trtexec") if p.is_file())
+            if hits:
+                return str(hits[0])
+
+    return None
+
+
+_SHARED_LIB_PATTERNS = (
+    "libvstrt*.so*",
+    "libnvinfer*.so*",
+    "libnvinfer_plugin*.so*",
+    "libnvonnxparser*.so*",
+    "libcudart*.so*",
+    "libcublas*.so*",
+    "libcudnn*.so*",
+    "libnvrtc*.so*",
+    "libtensorrt*.so*",
+)
+
+
+def _python_shared_lib_dirs() -> list[Path]:
+    roots: list[Path] = []
+
+    def add_root(path: str | Path | None) -> None:
+        if not path:
+            return
+        root = Path(path)
+        if root.exists() and root not in roots:
+            roots.append(root)
+
+    def add_conda_base_roots(base: str | Path | None) -> None:
+        if not base:
+            return
+        base_path = Path(base)
+        add_root(base_path / "lib")
+        for path in (base_path / "lib").glob("python*/site-packages/tensorrt_libs"):
+            add_root(path)
+        for path in (base_path / "lib").glob("python*/site-packages/nvidia/*/lib"):
+            add_root(path)
+
+    add_root(Path(sys.prefix) / "lib")
+    add_root(Path(getattr(sys, "base_prefix", sys.prefix)) / "lib")
+    for env_name in ("CONDA_PREFIX", "VIRTUAL_ENV"):
+        if os.environ.get(env_name):
+            add_root(Path(os.environ[env_name]) / "lib")
+
+    if os.environ.get("CONDA_PREFIX"):
+        conda_prefix = Path(os.environ["CONDA_PREFIX"])
+        if conda_prefix.parent.name == "envs":
+            add_conda_base_roots(conda_prefix.parent.parent)
+    if os.environ.get("CONDA_EXE"):
+        add_conda_base_roots(Path(os.environ["CONDA_EXE"]).parent.parent)
+    prefix = Path(sys.prefix)
+    if prefix.parent.name == "envs":
+        add_conda_base_roots(prefix.parent.parent)
+
+    for env_name in ("TENSORRT_HOME", "TRT_HOME", "CUDA_HOME", "CUDA_PATH"):
+        if os.environ.get(env_name):
+            root = Path(os.environ[env_name])
+            add_root(root / "lib")
+            add_root(root / "lib64")
+            add_root(root / "targets" / "x86_64-linux-gnu" / "lib")
+            add_root(root / "targets" / "x86_64-linux" / "lib")
+
+    for path in (
+        "/usr/src/tensorrt/lib",
+        "/usr/src/tensorrt/lib64",
+        "/usr/src/tensorrt/targets/x86_64-linux-gnu/lib",
+        "/usr/src/tensorrt/targets/x86_64-linux/lib",
+        "/usr/local/tensorrt/lib",
+        "/usr/local/tensorrt/lib64",
+        "/usr/local/TensorRT/lib",
+        "/usr/local/TensorRT/lib64",
+        "/usr/local/cuda/lib64",
+        "/usr/local/cuda/targets/x86_64-linux/lib",
+        "/usr/local/cuda/targets/x86_64-linux-gnu/lib",
+        "/usr/lib/x86_64-linux-gnu",
+    ):
+        add_root(path)
+
+    try:
+        for path in site.getsitepackages():
+            add_root(path)
+    except Exception:
+        pass
+
+    try:
+        add_root(site.getusersitepackages())
+    except Exception:
+        pass
+
+    dirs: list[Path] = []
+    for root in roots:
+        for pattern in _SHARED_LIB_PATTERNS:
+            for path in root.rglob(pattern):
+                if path.is_file() and path.parent not in dirs:
+                    dirs.append(path.parent)
+    return dirs
+
+
+def env_with_runtime_libs(plugins_dir: str | None) -> dict[str, str]:
+    env = os.environ.copy()
+    lib_dirs: list[Path] = []
+
+    if plugins_dir:
+        root = Path(plugins_dir)
+        if root.is_dir():
+            lib_dirs.append(root)
+            lib_dirs.extend(
+                sorted(
+                    {p.parent for p in root.rglob("*.so") if p.is_file()},
+                    key=lambda p: str(p),
+                )
+            )
+
+    lib_dirs.extend(path for path in _python_shared_lib_dirs() if path not in lib_dirs)
+
+    existing = env.get("LD_LIBRARY_PATH", "")
+    parts = [str(path) for path in lib_dirs]
+    if existing:
+        parts.append(existing)
+    if parts:
+        env["LD_LIBRARY_PATH"] = os.pathsep.join(parts)
+    return env
+
+
+def _probe_vapoursynth_namespace(cfg: RuntimeConfig, namespace: str) -> tuple[bool, str]:
+    code = f"""
+from vapoursynth import core
+ns = {namespace!r}
+if not hasattr(core, ns):
+    raise SystemExit(f"missing core.{{ns}}")
+version = getattr(core, ns).Version()
+print(version)
+"""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            env=env_with_runtime_libs(cfg.plugins_dir),
+            text=True,
+            timeout=20,
+        )
+    except Exception as exc:
+        return False, str(exc)
+
+    detail = (result.stdout or result.stderr).strip()
+    return result.returncode == 0, detail or f"exit {result.returncode}"
+
+
 def resolve(cfg: RuntimeConfig, **overrides: object) -> RuntimeConfig:
     """Fill blanks via env vars then auto-detection, applying CLI overrides last.
 
-    overrides: vspipe, ffmpeg, plugins_dir, models_dir, pipeline_vpy, device_id,
+    overrides: vspipe, ffmpeg, plugins_dir, models_dir, trtexec, pipeline_vpy, device_id,
     num_streams, encoder, fp16 — any non-None value wins.
     """
     # env
@@ -116,6 +300,7 @@ def resolve(cfg: RuntimeConfig, **overrides: object) -> RuntimeConfig:
     cfg.ffmpeg = cfg.ffmpeg or os.environ.get("VSR_FFMPEG", "")
     cfg.plugins_dir = cfg.plugins_dir or os.environ.get("VSR_PLUGINS", "")
     cfg.models_dir = cfg.models_dir or os.environ.get("VSR_MODELS", "")
+    cfg.trtexec = cfg.trtexec or os.environ.get("VSR_TRTEXEC", "")
     cfg.pipeline_vpy = cfg.pipeline_vpy or os.environ.get("VSR_PIPELINE", "")
 
     # auto-detect
@@ -125,6 +310,8 @@ def resolve(cfg: RuntimeConfig, **overrides: object) -> RuntimeConfig:
         cfg.ffmpeg = _which("ffmpeg") or "ffmpeg"
     if not cfg.models_dir:
         cfg.models_dir = _autodetect_models(cfg.plugins_dir) or ""
+    if not cfg.trtexec:
+        cfg.trtexec = _autodetect_trtexec(cfg.plugins_dir) or ""
     if not cfg.pipeline_vpy:
         cfg.pipeline_vpy = str(default_pipeline_vpy())
 
@@ -153,6 +340,20 @@ def diagnose(cfg: RuntimeConfig) -> list[tuple[str, bool, str]]:
     checks.append(("RealESRGAN models", re_ok, str(models / "RealESRGANv2") if models else "models_dir unset"))
     rife_ok = bool(models) and (models / "rife").is_dir()
     checks.append(("RIFE models", rife_ok, str(models / "rife") if models else "models_dir unset"))
+
+    lsmas_ok, lsmas_detail = _probe_vapoursynth_namespace(cfg, "lsmas")
+    ffms2_ok, ffms2_detail = _probe_vapoursynth_namespace(cfg, "ffms2")
+    source_detail = "lsmas: " + lsmas_detail if lsmas_ok else "ffms2: " + ffms2_detail
+    if not (lsmas_ok or ffms2_ok):
+        source_detail = f"lsmas: {lsmas_detail}; ffms2: {ffms2_detail}"
+    checks.append(("source filter", lsmas_ok or ffms2_ok, source_detail))
+
+    trt_ok, trt_detail = _probe_vapoursynth_namespace(cfg, "trt")
+    checks.append(("core.trt", trt_ok, trt_detail))
+
+    trtexec_ok = bool(cfg.trtexec) and Path(cfg.trtexec).is_file()
+    trtexec_detail = cfg.trtexec or "not found; install Linux TensorRT CLI or set VSR_TRTEXEC"
+    checks.append(("trtexec", trtexec_ok, trtexec_detail))
 
     nvsmi = _which("nvidia-smi")
     checks.append(("nvidia-smi", bool(nvsmi), nvsmi or "not found"))

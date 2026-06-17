@@ -51,6 +51,7 @@ def _add_runtime_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--ffmpeg", help="ffmpeg 可执行文件路径")
     p.add_argument("--plugins-dir", help="VapourSynth plugins 目录")
     p.add_argument("--models-dir", help="模型目录 (含 RealESRGANv2/ rife/)")
+    p.add_argument("--trtexec", help="Linux trtexec 可执行文件路径")
     p.add_argument("--pipeline-vpy", help="pipeline.vpy 路径")
     p.add_argument("--device-id", type=int, help="GPU 设备号")
     p.add_argument("--num-streams", type=int, help="TensorRT 并行流数")
@@ -65,6 +66,7 @@ def _load_cfg(args: argparse.Namespace) -> RuntimeConfig:
         ffmpeg=getattr(args, "ffmpeg", None),
         plugins_dir=getattr(args, "plugins_dir", None),
         models_dir=getattr(args, "models_dir", None),
+        trtexec=getattr(args, "trtexec", None),
         pipeline_vpy=getattr(args, "pipeline_vpy", None),
         device_id=getattr(args, "device_id", None),
         num_streams=getattr(args, "num_streams", None),

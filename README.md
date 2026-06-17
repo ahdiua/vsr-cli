@@ -29,9 +29,9 @@ TensorRT engine 由 `vsmlrt.Backend.TRT` 自动构建并缓存（首次运行较
 
 ## 在 AutoDL / Ubuntu 22.04 GPU 容器上安装
 
-> VideoJaNai 的 `backend` 是 **Windows** 便携包，**无法**直接在 Linux 运行。Linux 需用 vs-mlrt 的 Linux x64 release 自建运行时——`setup.sh` 已自动化这一过程。
+> VideoJaNai 的 `backend` 是 **Windows** 便携包，**无法**直接在 Linux 运行。Linux 运行时使用 PyPI wheel 安装 VapourSynth / L-SMASH / vs-mlrt TensorRT filter，vs-mlrt release 只用于下载 `vsmlrt.py` 和模型包。
 
-用 VapourSynth 官方推荐的方式：Python 3.12+ 环境 + `pip install vapoursynth`，源插件用 VSRepo 安装。
+用 VapourSynth 官方推荐的方式：Python 3.12+ 环境 + `pip install vapoursynth`；源插件优先 `pip install vapoursynth-lsmas`，TensorRT filter 用 `pip install vapoursynth-mlrt-trt`。
 
 > **默认安装进“当前已激活的环境”**——可以是 **venv 或 conda 环境**。`setup.sh` 启动时打印目标 Python/环境并**要求输入 `y` 确认**才继续；仅当是裸的系统 Python（既非 venv 也非 conda）时才额外警告会污染系统。
 
@@ -42,8 +42,8 @@ TensorRT engine 由 `vsmlrt.Backend.TRT` 自动构建并缓存（首次运行较
 python3.12 -m venv ~/vsr-venv && source ~/vsr-venv/bin/activate     # venv
 # conda create -n vsr python=3.12 -y && conda activate vsr          # 或 conda
 
-# 2. 一键搭建运行时（装进当前环境：VapourSynth/VSRepo/源插件
-#    + 下载 vs-mlrt Linux 插件/trtexec + 模型 + 安装 vsr 本体）
+# 2. 一键搭建运行时（装进当前环境：VapourSynth/source plugin/TRT filter
+#    + 下载 vsmlrt.py + 模型 + 安装 vsr 本体）
 cd vsr-cli
 bash setup.sh            # 运行时默认装到 /root/autodl-tmp/vsr-runtime
 #   启动后输入 y 确认目标环境
@@ -63,16 +63,22 @@ vsr build-engines -i sample.mkv --upscale --model animejanaiV3_HD_L2 --rife --ri
 | `VSR_RUNTIME=/path` | 运行时目录 |
 | `VSMLRT_TAG=v15.x` | 指定 vs-mlrt release tag（默认 latest） |
 | `MODEL_PACKS="RealESRGANv2 rife"` | 要下载的模型包 |
-| `SOURCE_PLUGIN="lsmas ffms2"` | VSRepo 源插件（按序尝试） |
+| `SOURCE_PIP_PACKAGES="vapoursynth-lsmas"` | pip 源插件包 |
+| `SOURCE_PLUGIN="lsmas ffms2"` | VSRepo fallback 源插件（仅 pip/autoload 失败时尝试） |
+| `SKIP_VSREPO_FALLBACK=1` | 禁止使用 VSRepo fallback |
+| `VSR_TRTEXEC=/path/to/trtexec` | 指定 Linux `trtexec` 路径 |
+| `TENSORRT_HOME=/usr/src/tensorrt` | 指定 TensorRT SDK 根目录；AutoDL 常见路径会自动探测 |
+| `SKIP_RELEASE_EXTRACT=1` | 调试时跳过 `vsmlrt.py` 和模型包下载/解压 |
+| `FORCE_RELEASE_EXTRACT=1` | 即使已存在 `vsmlrt.py`/模型目录也重新解压 |
 | `GITHUB_TOKEN=...` | 提高 GitHub API 速率限制 |
 | `SKIP_APT=1` / `SKIP_PYTHON_INSTALL=1` | 关闭 apt / 关闭自动装 Python（仅 `CREATE_VENV`） |
 
 `setup.sh` 步骤：
 0. 打印目标环境并**确认 `y`**
-1. `pip install vapoursynth vsrepo onnx numpy onnxconverter-common`（装进当前/指定环境）
+1. `pip install vapoursynth onnx numpy onnxconverter-common`（装进当前/指定环境）
 2. `vapoursynth config`（+ `register-install`）配置插件自动加载
-3. **VSRepo** 安装源插件（`lsmas` 优先，回退 `ffms2`）
-4. 下载 **vs-mlrt** Linux 插件（vsort/vstrt + vsmlrt-cuda/trtexec）到 `plugins/`
+3. `pip install vapoursynth-lsmas`；只有未检测到 `core.lsmas` / `core.ffms2` 时才尝试 **VSRepo fallback**
+4. `pip install vapoursynth-mlrt-trt`；不会下载/解压 `vsmlrt-cuda.v*.7z.*`（该包当前是 Windows `.dll/.exe` 依赖包）
 5. 下载 **模型包**（RealESRGAN / RIFE）
 6. `pip install -e` 安装 `vsr` 本体，写 `~/.config/vsr/config.toml`
 
@@ -110,7 +116,7 @@ vsr
 | `--encoder` | `nvenc`(默认) / `x265` / `x264` / `ffv1` |
 | `--ffmpeg-args` | 自定义 ffmpeg 视频参数串，覆盖 `--encoder` |
 | `--device-id` / `--num-streams` / `--no-fp16` | TensorRT 选项 |
-| `--vspipe` / `--ffmpeg` / `--plugins-dir` / `--models-dir` / `--pipeline-vpy` | 运行时路径覆盖 |
+| `--vspipe` / `--ffmpeg` / `--plugins-dir` / `--models-dir` / `--trtexec` / `--pipeline-vpy` | 运行时路径覆盖 |
 
 运行 `vsr <子命令> -h` 查看完整选项。
 
@@ -125,13 +131,14 @@ vsr
 
 ## 运行时定位优先级
 
-`CLI 参数 > 环境变量(VSR_VSPIPE/VSR_FFMPEG/VSR_PLUGINS/VSR_MODELS/VSR_PIPELINE) > ~/.config/vsr/config.toml > 自动探测`
+`CLI 参数 > 环境变量(VSR_VSPIPE/VSR_FFMPEG/VSR_PLUGINS/VSR_MODELS/VSR_TRTEXEC/VSR_PIPELINE) > ~/.config/vsr/config.toml > 自动探测`
 
 ---
 
 ## 备注
 
 - 首次为每个 `分辨率 × 模型` 组合构建 TRT engine 需数分钟，属正常；`build-engines` 用于提前完成。
-- AutoDL 容器的 CUDA/TensorRT 版本需与下载的 vs-mlrt release 匹配；不匹配时用 `VSMLRT_TAG` 指定合适版本。
-- 源插件优先 `lsmas`(L-SMASH)，回退 `ffms2`。
+- `vapoursynth-mlrt-trt` 的 TensorRT 依赖需要能被动态链接器找到；若 `core.trt` 报 `libnvinfer_plugin.so.11` 找不到，检查 `LD_LIBRARY_PATH` 和 pip/conda 中的 TensorRT `.so` 目录。有些 conda 镜像会把这些普通 `.so` 放在 base 环境的 `lib/python*/site-packages/tensorrt_libs` 下，路径里的 Python 版本不代表当前运行解释器版本。
+- `trtexec` 可能需要单独安装 Linux TensorRT CLI；AutoDL 常见的 `/usr/src/tensorrt/bin/trtexec` 会自动探测，也可用 `VSR_TRTEXEC` / `--trtexec` 指定。
+- 源插件优先 `vapoursynth-lsmas`，需要时才回退 `ffms2`。
 - 音轨/字幕/附件从原片复制，仅视频重编码。

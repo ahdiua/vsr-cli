@@ -8,11 +8,11 @@
 # system Python (no venv, no conda) triggers the extra "will pollute" warning.
 #
 #   0. confirm the target Python environment (the active one)
-#   1. pip install vapoursynth vsrepo  (into the active env)
+#   1. pip install vapoursynth + Python tooling (into the active env)
 #   2. `vapoursynth config` (+ conda libpython fallback + register-install)
 #      to set up plugin autoload
-#   3. source plugin (lsmas/ffms2) via VSRepo
-#   4. vs-mlrt Linux x64 plugins (vsort/vstrt + vsmlrt-cuda incl. trtexec)
+#   3. source plugin via pip wheel (vapoursynth-lsmas); VSRepo is fallback only
+#   4. vs-mlrt TensorRT filter via pip wheel (vapoursynth-mlrt-trt)
 #   5. RealESRGAN + RIFE model packs
 #   6. install the vsr CLI itself + write config.toml
 #
@@ -25,7 +25,14 @@
 #                      the active env (auto-installs python3.12 if needed)
 #   VSMLRT_TAG         vs-mlrt release tag (default: latest)
 #   MODEL_PACKS        model asset regexes (default: "^models\\. ^contrib-models\\.")
-#   SOURCE_PLUGIN      VSRepo source plugin id(s) (default: "lsmas ffms2")
+#   SOURCE_PLUGIN      VSRepo fallback source plugin id(s) (default: "lsmas ffms2")
+#   SOURCE_PIP_PACKAGES pip packages for source filters (default: vapoursynth-lsmas)
+#   MLRT_TRT_PACKAGE   pip package for the TensorRT VS filter
+#   SKIP_VSREPO_FALLBACK=1 never use VSRepo fallback for source filters
+#   VSR_TRTEXEC        optional explicit Linux trtexec path
+#   TENSORRT_HOME      optional TensorRT SDK root (e.g. /usr/src/tensorrt)
+#   SKIP_RELEASE_EXTRACT=1 skip vsmlrt.py/model release download+extract
+#   FORCE_RELEASE_EXTRACT=1 re-extract release archives even if files exist
 #   SEVENZ_THREADS     optional 7z extraction threads override
 #   SKIP_PYTHON_INSTALL=1   (CREATE_VENV) don't auto-install python3.12
 #   SKIP_APT=1         do not use apt at all (assume deps already present)
@@ -35,6 +42,8 @@ RUNTIME_DIR="${1:-${VSR_RUNTIME:-/root/autodl-tmp/vsr-runtime}}"
 VSMLRT_TAG="${VSMLRT_TAG:-latest}"
 MODEL_PACKS="${MODEL_PACKS:-^models\\. ^contrib-models\\.}"
 SOURCE_PLUGIN="${SOURCE_PLUGIN:-lsmas ffms2}"
+SOURCE_PIP_PACKAGES="${SOURCE_PIP_PACKAGES:-vapoursynth-lsmas}"
+MLRT_TRT_PACKAGE="${MLRT_TRT_PACKAGE:-vapoursynth-mlrt-trt}"
 SEVENZ_THREADS="${SEVENZ_THREADS:-}"
 REPO="AmusementClub/vs-mlrt"
 
@@ -334,10 +343,195 @@ run_vsrepo_install() {
     return 0
 }
 
+probe_source_filter() {
+    "$PYTHON" - <<'PY' 2>/dev/null
+from vapoursynth import core
+
+for namespace in ("lsmas", "ffms2"):
+    if hasattr(core, namespace):
+        plugin = getattr(core, namespace)
+        try:
+            version = plugin.Version()
+        except Exception:
+            version = "available"
+        print(f"{namespace}: {version}")
+        raise SystemExit(0)
+
+raise SystemExit(1)
+PY
+}
+
+find_trtexec() {
+    local cand
+
+    if [[ -n "${VSR_TRTEXEC:-}" ]]; then
+        if [[ -x "$VSR_TRTEXEC" ]]; then
+            printf '%s\n' "$VSR_TRTEXEC"
+            return 0
+        fi
+        err "VSR_TRTEXEC is set but not executable: $VSR_TRTEXEC"
+    fi
+
+    for cand in \
+        "$PYBIN_DIR/trtexec" \
+        "$PY_PREFIX/bin/trtexec" \
+        "${CONDA_PREFIX:-}/bin/trtexec" \
+        "${VIRTUAL_ENV:-}/bin/trtexec" \
+        "${TENSORRT_HOME:-}/bin/trtexec" \
+        "${TRT_HOME:-}/bin/trtexec" \
+        "/usr/src/tensorrt/bin/trtexec" \
+        "/usr/local/tensorrt/bin/trtexec" \
+        "/usr/local/TensorRT/bin/trtexec"; do
+        if [[ -n "$cand" && -x "$cand" ]]; then
+            printf '%s\n' "$cand"
+            return 0
+        fi
+    done
+
+    command -v trtexec 2>/dev/null || true
+}
+
+extend_ld_library_path_for_python_libs() {
+    local lib_dirs dir updated=0
+
+    if ! lib_dirs="$("$PYTHON" - <<'PY'
+import os
+import site
+import sys
+from pathlib import Path
+
+patterns = (
+    "libvstrt*.so*",
+    "libnvinfer*.so*",
+    "libnvinfer_plugin*.so*",
+    "libnvonnxparser*.so*",
+    "libcudart*.so*",
+    "libcublas*.so*",
+    "libcudnn*.so*",
+    "libnvrtc*.so*",
+    "libtensorrt*.so*",
+)
+
+roots = []
+
+
+def add_root(path):
+    if not path:
+        return
+    path = Path(path)
+    if path.exists() and path not in roots:
+        roots.append(path)
+
+
+def add_conda_base_roots(base):
+    if not base:
+        return
+    base = Path(base)
+    add_root(base / "lib")
+    for path in (base / "lib").glob("python*/site-packages/tensorrt_libs"):
+        add_root(path)
+    for path in (base / "lib").glob("python*/site-packages/nvidia/*/lib"):
+        add_root(path)
+
+
+add_root(Path(sys.prefix) / "lib")
+add_root(Path(getattr(sys, "base_prefix", sys.prefix)) / "lib")
+for env_name in ("CONDA_PREFIX", "VIRTUAL_ENV"):
+    if os.environ.get(env_name):
+        add_root(Path(os.environ[env_name]) / "lib")
+
+if os.environ.get("CONDA_PREFIX"):
+    conda_prefix = Path(os.environ["CONDA_PREFIX"])
+    if conda_prefix.parent.name == "envs":
+        add_conda_base_roots(conda_prefix.parent.parent)
+if os.environ.get("CONDA_EXE"):
+    add_conda_base_roots(Path(os.environ["CONDA_EXE"]).parent.parent)
+prefix = Path(sys.prefix)
+if prefix.parent.name == "envs":
+    add_conda_base_roots(prefix.parent.parent)
+
+for env_name in ("TENSORRT_HOME", "TRT_HOME", "CUDA_HOME", "CUDA_PATH"):
+    root = os.environ.get(env_name)
+    if root:
+        add_root(Path(root) / "lib")
+        add_root(Path(root) / "lib64")
+        add_root(Path(root) / "targets" / "x86_64-linux-gnu" / "lib")
+        add_root(Path(root) / "targets" / "x86_64-linux" / "lib")
+
+for path in (
+    "/usr/src/tensorrt/lib",
+    "/usr/src/tensorrt/lib64",
+    "/usr/src/tensorrt/targets/x86_64-linux-gnu/lib",
+    "/usr/src/tensorrt/targets/x86_64-linux/lib",
+    "/usr/local/tensorrt/lib",
+    "/usr/local/tensorrt/lib64",
+    "/usr/local/TensorRT/lib",
+    "/usr/local/TensorRT/lib64",
+    "/usr/local/cuda/lib64",
+    "/usr/local/cuda/targets/x86_64-linux/lib",
+    "/usr/local/cuda/targets/x86_64-linux-gnu/lib",
+    "/usr/lib/x86_64-linux-gnu",
+):
+    add_root(path)
+
+try:
+    for path in site.getsitepackages():
+        add_root(path)
+except Exception:
+    pass
+
+try:
+    add_root(site.getusersitepackages())
+except Exception:
+    pass
+
+seen = []
+for root in roots:
+    for pattern in patterns:
+        for path in root.rglob(pattern):
+            if path.is_file():
+                parent = str(path.parent)
+                if parent not in seen:
+                    seen.append(parent)
+
+for path in seen:
+    print(path)
+PY
+)"; then
+        err "Could not inspect Python package library directories."
+        return 0
+    fi
+
+    while IFS= read -r dir; do
+        [[ -z "$dir" ]] && continue
+        case ":${LD_LIBRARY_PATH:-}:" in
+            *":$dir:"*) ;;
+            *)
+                export LD_LIBRARY_PATH="$dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+                updated=1
+                ;;
+        esac
+    done <<< "$lib_dirs"
+
+    if [[ "$updated" == "1" ]]; then
+        log "Updated LD_LIBRARY_PATH for Python package shared libraries."
+    fi
+}
+
 # --- 1. pip install VapourSynth into the active env ------------------------
 log "pip install vapoursynth + tooling…"
 "$PYTHON" -m pip install --upgrade pip wheel
-"$PYTHON" -m pip install vapoursynth vsrepo onnx numpy onnxconverter-common
+"$PYTHON" -m pip install vapoursynth onnx numpy onnxconverter-common
+if [[ -n "$SOURCE_PIP_PACKAGES" ]]; then
+    log "pip install source plugin wheel(s): $SOURCE_PIP_PACKAGES"
+    "$PYTHON" -m pip install --upgrade $SOURCE_PIP_PACKAGES
+fi
+log "pip install $MLRT_TRT_PACKAGE…"
+if ! "$PYTHON" -m pip install --upgrade "$MLRT_TRT_PACKAGE"; then
+    err "Could not install $MLRT_TRT_PACKAGE."
+    err "Continuing; vsr doctor will report whether core.trt is available."
+fi
+extend_ld_library_path_for_python_libs
 
 # Configure VapourSynth (sets up plugin autoload dirs / VSSCRIPT_PATH).
 log "Running 'vapoursynth config'…"
@@ -356,26 +550,35 @@ VSPIPE_BIN="$PYBIN_DIR/vspipe"
 [[ -n "$VSPIPE_BIN" && -x "$VSPIPE_BIN" ]] || err "vspipe not found next to $PYTHON — some VapourSynth wheels omit it; check the install."
 log "vspipe: $VSPIPE_BIN"
 
-# --- 3. source plugin via VSRepo -------------------------------------------
-log "Installing source plugin(s) via VSRepo: $SOURCE_PLUGIN"
-ensure_python_user_site_dir
-run_script vsrepo update || err "'vsrepo update' failed (continuing)."
+# --- 3. source plugin check; VSRepo only as fallback ------------------------
 SRC_OK=0
-for sp in $SOURCE_PLUGIN; do
-    if run_vsrepo_install "$sp"; then
-        log "VSRepo source plugin available: $sp"
-        SRC_OK=1
-        break
-    else
-        err "VSRepo could not install '$sp' on this platform — trying next."
-    fi
-done
+if SOURCE_AVAILABLE="$(probe_source_filter)"; then
+    log "Source plugin available: $SOURCE_AVAILABLE"
+    SRC_OK=1
+elif [[ "${SKIP_VSREPO_FALLBACK:-0}" == "1" ]]; then
+    err "No source plugin detected after pip install, and SKIP_VSREPO_FALLBACK=1."
+else
+    log "No pip/autoloaded source plugin detected; trying VSRepo fallback: $SOURCE_PLUGIN"
+    "$PYTHON" -m pip install vsrepo
+    ensure_python_user_site_dir
+    run_script vsrepo update || err "'vsrepo update' failed (continuing)."
+    for sp in $SOURCE_PLUGIN; do
+        if run_vsrepo_install "$sp"; then
+            log "VSRepo source plugin available: $sp"
+            SRC_OK=1
+            break
+        else
+            err "VSRepo could not install '$sp' on this platform — trying next."
+        fi
+    done
+fi
 if [[ "$SRC_OK" != "1" ]]; then
-    err "No source plugin installed via VSRepo. Install ffms2 or L-SMASH-Works .so"
-    err "into the VapourSynth autoload dir (or into $PLUGINS_DIR) before running vsr."
+    err "No source plugin detected. Install vapoursynth-lsmas or ffms2 before running vsr."
 fi
 
 # --- GitHub release asset helpers ------------------------------------------
+release_assets_loaded=0
+
 api_url() {
     if [[ "$VSMLRT_TAG" == "latest" ]]; then
         echo "https://api.github.com/repos/$REPO/releases/latest"
@@ -383,20 +586,24 @@ api_url() {
         echo "https://api.github.com/repos/$REPO/releases/tags/$VSMLRT_TAG"
     fi
 }
-list_assets() {
+load_release_assets() {
+    if [[ "$release_assets_loaded" == "1" ]]; then
+        return 0
+    fi
+
     local auth=()
     [[ -n "${GITHUB_TOKEN:-}" ]] && auth=(-H "Authorization: Bearer $GITHUB_TOKEN")
-    curl -fsSL "${auth[@]}" "$(api_url)" | "$PYTHON" -c '
+    ASSETS="$(curl -fsSL "${auth[@]}" "$(api_url)" | "$PYTHON" -c '
 import json
 import sys
 
 d = json.load(sys.stdin)
 for a in d.get("assets", []):
     print(a["name"] + "\t" + a["browser_download_url"] + "\t" + str(a.get("size", "")))
-'
+')" || { err "Failed to query GitHub release assets."; return 1; }
+    release_assets_loaded=1
+    log "vs-mlrt release '$VSMLRT_TAG': $(printf '%s\n' "$ASSETS" | grep -c . ) assets."
 }
-ASSETS="$(list_assets)" || { err "Failed to query GitHub release assets."; exit 2; }
-log "vs-mlrt release '$VSMLRT_TAG': $(printf '%s\n' "$ASSETS" | grep -c . ) assets."
 
 download_asset() {
     local name="$1" url="$2" out="$3"
@@ -415,6 +622,7 @@ download_asset() {
 
 download_and_extract() {
     local pattern="$1" dest="$2" matched=0 extract_file=""
+    load_release_assets || return 1
     while IFS=$'\t' read -r name url size; do
         [[ -z "$name" ]] && continue
         if printf '%s' "$name" | grep -qiE "$pattern"; then
@@ -485,16 +693,18 @@ download_and_extract() {
     esac
 }
 
-# --- 4. vs-mlrt Linux plugins ----------------------------------------------
-log "Fetching vs-mlrt Linux plugins…"
-download_and_extract '^vsmlrt-cuda\.' "$PLUGINS_DIR"
-find "$PLUGINS_DIR" -name trtexec -exec chmod +x {} \; 2>/dev/null || true
-
-# vsmlrt.py: prefer the local checkout, else the release asset.
-if [[ -f "$SCRIPT_DIR/../vs-mlrt/scripts/vsmlrt.py" ]]; then
+# --- 4. vsmlrt.py script (filter backend comes from pip wheel) -------------
+# Do not download vsmlrt-cuda.* here: current release assets are Windows
+# .dll/.exe bundles and are useless for the Linux TensorRT wheel route.
+if [[ "${SKIP_RELEASE_EXTRACT:-0}" == "1" ]]; then
+    log "SKIP_RELEASE_EXTRACT=1: skipping vsmlrt.py and model archive extraction."
+elif [[ -f "$PLUGINS_DIR/vsmlrt.py" && "${FORCE_RELEASE_EXTRACT:-0}" != "1" ]]; then
+    log "Existing vsmlrt.py found; skipping scripts archive extraction."
+elif [[ -f "$SCRIPT_DIR/../vs-mlrt/scripts/vsmlrt.py" ]]; then
     cp "$SCRIPT_DIR/../vs-mlrt/scripts/vsmlrt.py" "$PLUGINS_DIR/vsmlrt.py"
     log "Copied vsmlrt.py from local checkout."
 else
+    log "Fetching vsmlrt.py script from vs-mlrt release…"
     download_and_extract 'vsmlrt\.py|scripts' "$PLUGINS_DIR" || true
 fi
 
@@ -503,13 +713,19 @@ fi
 # into MODELS_DIR (.../vs-plugins/models) would nest them as models/models/…,
 # which `vsr doctor` / vsmlrt.models_path can't find. Extract, then flatten any
 # nested models/ up one level so the layout is MODELS_DIR/<RealESRGANv2|rife|…>.
-log "Fetching model packs: $MODEL_PACKS"
-for pack in $MODEL_PACKS; do
-    download_and_extract "$pack" "$MODELS_DIR"
-done
-if [[ -d "$MODELS_DIR/models" ]]; then
-    log "Flattening nested models/ dir into $MODELS_DIR"
-    cp -a "$MODELS_DIR/models/." "$MODELS_DIR/" && rm -rf "$MODELS_DIR/models"
+if [[ "${SKIP_RELEASE_EXTRACT:-0}" == "1" ]]; then
+    :
+elif [[ -d "$MODELS_DIR/RealESRGANv2" && -d "$MODELS_DIR/rife" && "${FORCE_RELEASE_EXTRACT:-0}" != "1" ]]; then
+    log "Existing model directories found; skipping model archive extraction."
+else
+    log "Fetching model packs: $MODEL_PACKS"
+    for pack in $MODEL_PACKS; do
+        download_and_extract "$pack" "$MODELS_DIR"
+    done
+    if [[ -d "$MODELS_DIR/models" ]]; then
+        log "Flattening nested models/ dir into $MODELS_DIR"
+        cp -a "$MODELS_DIR/models/." "$MODELS_DIR/" && rm -rf "$MODELS_DIR/models"
+    fi
 fi
 
 # --- 6. install vsr CLI + write config -------------------------------------
@@ -521,18 +737,27 @@ mkdir -p "$CONFIG_DIR"
 CONFIG_FILE="$CONFIG_DIR/config.toml"
 FFMPEG_BIN="$(command -v ffmpeg || echo ffmpeg)"
 PIPELINE_VPY="$SCRIPT_DIR/pipeline.vpy"
+TRTEXEC_BIN="$(find_trtexec || true)"
+if [[ -n "$TRTEXEC_BIN" ]]; then
+    log "trtexec: $TRTEXEC_BIN"
+else
+    err "trtexec not found. build-engines may fail until you install Linux TensorRT CLI or set VSR_TRTEXEC."
+fi
 
-cat > "$CONFIG_FILE" <<EOF
-vspipe = "$VSPIPE_BIN"
-ffmpeg = "$FFMPEG_BIN"
-plugins_dir = "$PLUGINS_DIR"
-models_dir = "$MODELS_DIR"
-pipeline_vpy = "$PIPELINE_VPY"
-encoder = "nvenc"
-num_streams = 2
-device_id = 0
-fp16 = true
-EOF
+{
+    printf 'vspipe = "%s"\n' "$VSPIPE_BIN"
+    printf 'ffmpeg = "%s"\n' "$FFMPEG_BIN"
+    printf 'plugins_dir = "%s"\n' "$PLUGINS_DIR"
+    printf 'models_dir = "%s"\n' "$MODELS_DIR"
+    printf 'pipeline_vpy = "%s"\n' "$PIPELINE_VPY"
+    if [[ -n "$TRTEXEC_BIN" ]]; then
+        printf 'trtexec = "%s"\n' "$TRTEXEC_BIN"
+    fi
+    printf 'encoder = "nvenc"\n'
+    printf 'num_streams = 2\n'
+    printf 'device_id = 0\n'
+    printf 'fp16 = true\n'
+} > "$CONFIG_FILE"
 
 log "Wrote config: $CONFIG_FILE"
 log "Runtime ready at: $RUNTIME_DIR"
