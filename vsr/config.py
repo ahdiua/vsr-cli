@@ -22,14 +22,10 @@ import site
 import shutil
 import subprocess
 import sys
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
-try:  # py311+
-    import tomllib as _toml_read
-except ModuleNotFoundError:  # pragma: no cover - py38-310
-    import tomli as _toml_read  # type: ignore
-
+import tomllib as _toml_read
 import tomli_w
 
 from . import presets
@@ -70,7 +66,6 @@ class RuntimeConfig:
     num_streams: int = 2
     device_id: int = 0
     fp16: bool = True
-    trt_args: dict = field(default_factory=dict)
 
     @classmethod
     def from_file(cls, path: Path | None = None) -> "RuntimeConfig":

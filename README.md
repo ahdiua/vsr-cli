@@ -30,7 +30,7 @@ vsr (CLI / TUI)
 vsr run -i in.mkv -o out.mkv --upscale --model animejanaiV3_HD_L2 --encoder nvenc
 
 # 仅插帧 (2x 帧率)
-vsr run -i in.mkv -o out.mkv --rife --rife-multi 2 --rife-model v4_22
+vsr run -i in.mkv -o out.mkv --rife --rife-multi 2 --rife-model v4_10
 
 # 超分 + 插帧
 vsr run -i in.mkv -o out.mkv --upscale --model animejanaiV3_HD_L2 --rife --rife-multi 2
@@ -77,11 +77,11 @@ vsr build-engines -i sample.mkv --upscale --model animejanaiV3_HD_L2 --rife --ri
 
 1. 打印目标环境并确认
 2. `pip install vapoursynth onnx numpy onnxconverter-common`
-3. `vapoursynth config` + `register-install` 配置插件自动加载
-4. `pip install vapoursynth-lsmas`（未检测到 `core.lsmas`/`core.ffms2` 时才 VSRepo fallback）
-5. `pip install vapoursynth-mlrt-trt`（自动检测系统 TensorRT 时加 `--no-deps`）
-6. 下载模型包（RealESRGAN / RIFE）
-7. `pip install -e` 安装 `vsr` 本体，写 `~/.config/vsr/config.toml`
+3. 安装源插件 wheel（默认 `vapoursynth-lsmas`）和 `vapoursynth-mlrt-trt`
+4. `vapoursynth config` + `register-install` 配置插件自动加载
+5. 验证 `core.lsmas`/`core.ffms2`，失败时才尝试 VSRepo fallback
+6. 部署 `vsmlrt.py`，下载模型包（RealESRGAN / RIFE）
+7. `pip install -e` 安装 `vsr` 本体，验证运行时文件并写 `~/.config/vsr/config.toml`
 
 运行时目录（插件 + 模型）可 `tar` 打包复用；Python 依赖在你自己的 venv 中。
 
@@ -162,17 +162,24 @@ CLI 参数 > 环境变量 > ~/.config/vsr/config.toml > 自动探测
 | `VSR_RUNTIME=/path` | 运行时目录 |
 | `VSMLRT_TAG=v15.x` | vs-mlrt release tag（`prerelease` 从最新预发布拉模型） |
 | `VSMLRT_PY_REF=master` | 拉 `vsmlrt.py` 的 git ref |
+| `VSMLRT_PY_URL=https://...` | 覆盖 `vsmlrt.py` 下载地址 |
 | `FORCE_VSMLRT_PY=1` | 强制重新拉 `vsmlrt.py` |
-| `MODEL_PACKS="RealESRGANv2 rife"` | 要下载的模型包 |
+| `MODEL_PACKS="^models\\. ^contrib-models\\."` | 要下载的 release asset 正则 |
+| `SOURCE_PLUGIN="lsmas ffms2"` | VSRepo fallback 源插件 |
 | `SOURCE_PIP_PACKAGES="vapoursynth-lsmas"` | pip 源插件包 |
-| `MLRT_TRT_PACKAGE="vapoursynth-mlrt-trt==15.16.1"` | TRT filter pip 包 |
+| `SKIP_VSREPO_FALLBACK=1` | 禁止 VSRepo fallback |
+| `MLRT_TRT_PACKAGE="vapoursynth-mlrt-trt"` | TRT filter pip 包 |
 | `MLRT_TRT_NO_DEPS=1` | 只装 filter wheel，不拉 TensorRT libs |
 | `VSR_TRTEXEC=/path/to/trtexec` | 指定 trtexec 路径 |
 | `TENSORRT_HOME=/usr/src/tensorrt` | TensorRT SDK 根目录 |
-| `SKIP_RELEASE_EXTRACT=1` | 跳过模型包下载/解压 |
+| `SKIP_VSMLRT_PY=1` | 跳过部署 `vsmlrt.py`（要求已有文件） |
+| `SKIP_MODEL_EXTRACT=1` | 跳过模型下载/解压（要求已有模型目录） |
+| `SKIP_RELEASE_EXTRACT=1` | 旧兼容变量：同时跳过 `vsmlrt.py` 和模型 |
 | `FORCE_RELEASE_EXTRACT=1` | 强制重新解压 |
+| `SEVENZ_THREADS=1` | 限制 7z 解压线程数 |
 | `PIP_CACHE_DIR` / `TMPDIR` | 大型 wheel 缓存目录 |
 | `GITHUB_TOKEN=...` | 提高 GitHub API 速率限制 |
+| `SKIP_PYTHON_INSTALL=1` | `CREATE_VENV=1` 时禁止自动装 Python |
 | `SKIP_APT=1` | 关闭 apt 安装 |
 
 ---

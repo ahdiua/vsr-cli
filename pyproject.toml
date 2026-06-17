@@ -7,12 +7,11 @@ name = "vsr-cli"
 version = "0.1.0"
 description = "CLI for video super-resolution (R-ESRGAN) and frame interpolation (RIFE) via vs-mlrt on TensorRT, piped to ffmpeg"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.12"
 authors = [{ name = "vsr-cli" }]
 dependencies = [
     "questionary>=2.0",
     "rich>=13.0",
-    "tomli>=2.0; python_version < '3.11'",
     "tomli-w>=1.0",
 ]
 
@@ -21,4 +20,4 @@ vsr = "vsr.cli:main"
 
 [tool.setuptools]
 packages = ["vsr"]
-# pipeline.vpy ships alongside the package; located at runtime relative to repo root.
+# setup.sh installs this in editable/source-tree mode; pipeline.vpy stays at repo root.

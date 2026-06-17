@@ -74,13 +74,16 @@ vs-mlrt **release 自带的脚本滞后于插件**。比如 v15.16 release 的 `
 
 ---
 
-## setup.sh 额外环境变量（README 未列全）
+## setup.sh 跳过/回退变量
 
 | 变量 | 作用 |
 | --- | --- |
 | `SOURCE_PLUGIN="lsmas ffms2"` | VSRepo fallback 源插件（仅 pip/autoload 失败时尝试） |
 | `SKIP_VSREPO_FALLBACK=1` | 禁止使用 VSRepo fallback |
 | `SKIP_PYTHON_INSTALL=1` | 关闭自动装 Python（仅 `CREATE_VENV` 模式） |
+| `SKIP_VSMLRT_PY=1` | 不部署 `vsmlrt.py`，但最终会校验已有文件 |
+| `SKIP_MODEL_EXTRACT=1` | 不下载/解压模型，最终会校验 `RealESRGANv2/` 和 `rife/` |
+| `SKIP_RELEASE_EXTRACT=1` | 旧兼容变量，等同于同时设置上面两个 skip |
 
 ---
 

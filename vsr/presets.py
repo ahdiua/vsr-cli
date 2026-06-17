@@ -2,8 +2,8 @@
 
 The ffmpeg video-encoder preset strings are adopted from VideoJaNai
 (MainWindowViewModel.cs). Each is the argument list that follows ``-c:v`` so
-the pipeline can splice it directly into the ffmpeg command. ``-max_interleave_delta 0``
-is appended by the pipeline for every preset.
+the pipeline can splice it directly into the ffmpeg command.
+``-max_interleave_delta 0`` is appended by ``build_video_codec_args``.
 """
 
 from __future__ import annotations

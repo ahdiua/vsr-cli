@@ -44,7 +44,9 @@
 #   SKIP_VSREPO_FALLBACK=1 never use VSRepo fallback for source filters
 #   VSR_TRTEXEC        optional explicit Linux trtexec path
 #   TENSORRT_HOME      optional TensorRT SDK root (e.g. /usr/src/tensorrt)
-#   SKIP_RELEASE_EXTRACT=1 skip vsmlrt.py/model release download+extract
+#   SKIP_VSMLRT_PY=1   skip deploying vsmlrt.py; requires an existing copy
+#   SKIP_MODEL_EXTRACT=1 skip model release download+extract; requires models
+#   SKIP_RELEASE_EXTRACT=1 legacy alias: skip both vsmlrt.py and models
 #   FORCE_RELEASE_EXTRACT=1 re-extract release archives even if files exist
 #   SEVENZ_THREADS     optional 7z extraction threads override
 #   SKIP_PYTHON_INSTALL=1   (CREATE_VENV) don't auto-install python3.12
@@ -58,6 +60,8 @@ SOURCE_PLUGIN="${SOURCE_PLUGIN:-lsmas ffms2}"
 SOURCE_PIP_PACKAGES="${SOURCE_PIP_PACKAGES:-vapoursynth-lsmas}"
 MLRT_TRT_PACKAGE="${MLRT_TRT_PACKAGE:-vapoursynth-mlrt-trt}"
 SEVENZ_THREADS="${SEVENZ_THREADS:-}"
+SKIP_VSMLRT_PY="${SKIP_VSMLRT_PY:-${SKIP_RELEASE_EXTRACT:-0}}"
+SKIP_MODEL_EXTRACT="${SKIP_MODEL_EXTRACT:-${SKIP_RELEASE_EXTRACT:-0}}"
 REPO="AmusementClub/vs-mlrt"
 
 VENV_DIR="$RUNTIME_DIR/venv"
@@ -111,8 +115,12 @@ fi
 
 # --- system deps (curl / 7z / ffmpeg) --------------------------------------
 NEED_APT=()
-have curl   || NEED_APT+=(curl)
-{ have 7z || have 7za; } || NEED_APT+=(p7zip-full)
+if [[ "$SKIP_VSMLRT_PY" != "1" || "$SKIP_MODEL_EXTRACT" != "1" ]]; then
+    have curl || NEED_APT+=(curl)
+fi
+if [[ "$SKIP_MODEL_EXTRACT" != "1" ]]; then
+    { have 7z || have 7za; } || NEED_APT+=(p7zip-full)
+fi
 # Prefer a user-provided ffmpeg (e.g. a static build on the persistent disk) over
 # apt's: VSR_FFMPEG pointing at an executable means we skip apt entirely and avoid
 # dragging in ffmpeg's heavy GUI dependency stack.
@@ -126,6 +134,7 @@ if [[ ${#NEED_APT[@]} -gt 0 ]]; then
         # apt_get is a silent no-op in this case, so installs wouldn't happen and
         # the install-failure check below would never fire — surface it here.
         err "Missing required tools: ${NEED_APT[*]} — but apt is unavailable (SKIP_APT=1 or no apt-get). Install them manually, then re-run."
+        exit 2
     else
         log "Installing system deps: ${NEED_APT[*]}"
         apt_get update -y || true
@@ -136,11 +145,14 @@ if [[ ${#NEED_APT[@]} -gt 0 ]]; then
         # libsdl2 — unavoidable with apt's ffmpeg.) If you want zero apt bloat, drop a
         # static ffmpeg (e.g. BtbN build) on disk and point VSR_FFMPEG/--ffmpeg at it.
         apt_get install -y --no-install-recommends "${NEED_APT[@]}" \
-            || err "apt install failed for: ${NEED_APT[*]}"
+            || { err "apt install failed for: ${NEED_APT[*]}"; exit 2; }
     fi
 fi
 SEVENZ="$(command -v 7z || command -v 7za || true)"
-[[ -z "$SEVENZ" ]] && err "7z/7za not found — needed to extract release archives."
+if [[ -z "$SEVENZ" && "$SKIP_MODEL_EXTRACT" != "1" ]]; then
+    err "7z/7za not found — needed to extract release archives."
+    exit 2
+fi
 ARIA2C="$(command -v aria2c || true)"
 
 # --- 0. confirm target Python environment ----------------------------------
@@ -211,7 +223,10 @@ printf '   env    : %s\n' "$ENV_DESC"
 printf '   runtime: %s\n' "$RUNTIME_DIR"
 printf '\033[1;33m========================================================\033[0m\n'
 [[ "$ENV_KIND" == "system" ]] && err "未检测到虚拟环境/conda 环境 —— 将污染系统 Python。建议先激活 venv 或 conda 环境，或用 CREATE_VENV=1。"
-[[ "$PY_VER" != "3.1"[2-9] && "$PY_VER" != "3."[2-9][0-9] ]] && err "VapourSynth 需要 Python 3.12+，当前为 $PY_VER。"
+if [[ "$PY_VER" != "3.1"[2-9] && "$PY_VER" != "3."[2-9][0-9] ]]; then
+    err "VapourSynth 需要 Python 3.12+，当前为 $PY_VER。"
+    exit 2
+fi
 
 if [[ "${ASSUME_YES:-0}" != "1" ]]; then
     read -r -p "确认在以上环境继续安装? 输入 y 继续: " _ans < /dev/tty || _ans=""
@@ -736,6 +751,10 @@ download_and_extract() {
     local extract_log="$DL_DIR/$(basename "$extract_file").extract.log"
     case "$extract_file" in
         *.7z.001|*.7z|*.zip)
+            if [[ -z "$SEVENZ" ]]; then
+                err "7z/7za not found — needed to extract $(basename "$extract_file")."
+                return 1
+            fi
             local sevenz_args=(x -y -o"$dest")
             if [[ -n "$SEVENZ_THREADS" ]]; then
                 sevenz_args+=("-mmt=$SEVENZ_THREADS")
@@ -783,8 +802,8 @@ fetch_vsmlrt_py() {
     return 1
 }
 
-if [[ "${SKIP_RELEASE_EXTRACT:-0}" == "1" ]]; then
-    log "SKIP_RELEASE_EXTRACT=1: skipping vsmlrt.py and model archive extraction."
+if [[ "$SKIP_VSMLRT_PY" == "1" ]]; then
+    log "SKIP_VSMLRT_PY=1: skipping vsmlrt.py deployment."
 elif [[ -f "$SCRIPT_DIR/../vs-mlrt/scripts/vsmlrt.py" ]]; then
     # A local version-controlled checkout is the most authoritative source for a
     # pinned setup, so it wins over both the deployed copy and git. Copying is
@@ -807,7 +826,7 @@ fi
 # into MODELS_DIR (.../vs-plugins/models) would nest them as models/models/…,
 # which `vsr doctor` / vsmlrt.models_path can't find. Extract, then flatten any
 # nested models/ up one level so the layout is MODELS_DIR/<RealESRGANv2|rife|…>.
-if [[ "${SKIP_RELEASE_EXTRACT:-0}" == "1" ]]; then
+if [[ "$SKIP_MODEL_EXTRACT" == "1" ]]; then
     :
 elif [[ -d "$MODELS_DIR/RealESRGANv2" && -d "$MODELS_DIR/rife" && "${FORCE_RELEASE_EXTRACT:-0}" != "1" ]]; then
     log "Existing model directories found; skipping model archive extraction."
@@ -823,6 +842,15 @@ else
 fi
 
 # --- 5. install vsr CLI + write config -------------------------------------
+if [[ ! -f "$PLUGINS_DIR/vsmlrt.py" ]]; then
+    err "Missing $PLUGINS_DIR/vsmlrt.py. Re-run without SKIP_VSMLRT_PY=1 or set FORCE_VSMLRT_PY=1."
+    exit 2
+fi
+if [[ ! -d "$MODELS_DIR/RealESRGANv2" || ! -d "$MODELS_DIR/rife" ]]; then
+    err "Missing model directories under $MODELS_DIR. Re-run without SKIP_MODEL_EXTRACT=1."
+    exit 2
+fi
+
 log "Installing vsr CLI into the active environment…"
 "$PYTHON" -m pip install -e "$SCRIPT_DIR"
 

@@ -257,7 +257,7 @@ if do_rife:
         raise ValueError(
             f"pipeline.vpy: unknown RIFE model {rife_model_name!r}; valid: {valid}"
         )
-    rife_clip = _to_rgb(clip, vs.RGBH)
+    rife_clip = _to_rgb(clip, vs.RGBH if use_fp16 else vs.RGBS)
     # vsmlrt.RIFE (v1 implementation) requires the frame dimensions to be a
     # multiple of 32 and does not pad internally — a 4K upscale yields 3840x2160
     # and 2160 % 32 != 0, which raises "tile size must be divisible by 32". Pad
