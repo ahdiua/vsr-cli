@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # vsr-cli runtime bootstrap for Ubuntu 22.04 GPU containers (e.g. AutoDL).
 #
-# Conda-free. By DEFAULT this installs into the Python environment that is
-# ALREADY ACTIVE (the venv you created and `source`d). It pip-installs
-# VapourSynth here, then layers on the source plugin + vs-mlrt plugins + models.
-# Because it mutates the active environment, it WARNS and asks for `y` first.
+# By DEFAULT this installs into the Python environment that is ALREADY ACTIVE
+# (a venv OR a conda env you created and activated). It pip-installs VapourSynth
+# here, then layers on the source plugin + vs-mlrt plugins + models. Because it
+# mutates the active environment, it WARNS and asks for `y` first. Only a bare
+# system Python (no venv, no conda) triggers the extra "will pollute" warning.
 #
 #   0. confirm the target Python environment (the active one)
 #   1. pip install vapoursynth vsrepo  (into the active env)
@@ -105,17 +106,37 @@ PYTHON="${PY_BIN:-$(command -v python || command -v python3 || true)}"
 
 PY_VER="$("$PYTHON" -c 'import sys; print("%d.%d"%sys.version_info[:2])' 2>/dev/null || echo "?")"
 PY_PREFIX="$("$PYTHON" -c 'import sys; print(sys.prefix)' 2>/dev/null || echo "?")"
-IN_VENV="$("$PYTHON" -c 'import sys; print(1 if sys.prefix!=getattr(sys,"base_prefix",sys.prefix) else 0)' 2>/dev/null || echo 0)"
+# classify the active environment: conda env, venv, or bare system python.
+# conda envs are NOT venvs (sys.prefix == base_prefix) so detect them separately
+# via a conda-meta dir / CONDA_PREFIX; both venv and conda count as "isolated".
+ENV_KIND="$("$PYTHON" - <<'PY' 2>/dev/null || echo system
+import sys, os
+prefix = sys.prefix
+base = getattr(sys, "base_prefix", prefix)
+if os.path.isdir(os.path.join(prefix, "conda-meta")) or os.environ.get("CONDA_PREFIX"):
+    print("conda")
+elif prefix != base or os.environ.get("VIRTUAL_ENV"):
+    print("venv")
+else:
+    print("system")
+PY
+)"
+
+case "$ENV_KIND" in
+    conda) ENV_DESC="conda (${CONDA_DEFAULT_ENV:-$(basename "$PY_PREFIX")})" ;;
+    venv)  ENV_DESC="venv (${VIRTUAL_ENV:-$PY_PREFIX})" ;;
+    *)     ENV_DESC="NO — 这是系统/全局 Python!" ;;
+esac
 
 echo
 printf '\033[1;33m========================================================\033[0m\n'
 printf '\033[1;33m 即将把 VapourSynth 等依赖安装进“当前激活的环境”：\033[0m\n'
 printf '   python : %s  (Python %s)\n' "$PYTHON" "$PY_VER"
 printf '   prefix : %s\n' "$PY_PREFIX"
-printf '   venv   : %s\n' "$([[ "$IN_VENV" == "1" ]] && echo "yes (${VIRTUAL_ENV:-$PY_PREFIX})" || echo "NO — 这是系统/全局 Python!")"
+printf '   env    : %s\n' "$ENV_DESC"
 printf '   runtime: %s\n' "$RUNTIME_DIR"
 printf '\033[1;33m========================================================\033[0m\n'
-[[ "$IN_VENV" != "1" ]] && err "未检测到虚拟环境 —— 将污染系统 Python。建议先 source 你的 venv，或用 CREATE_VENV=1。"
+[[ "$ENV_KIND" == "system" ]] && err "未检测到虚拟环境/conda 环境 —— 将污染系统 Python。建议先激活 venv 或 conda 环境，或用 CREATE_VENV=1。"
 [[ "$PY_VER" != "3.1"[2-9] && "$PY_VER" != "3."[2-9][0-9] ]] && err "VapourSynth 需要 Python 3.12+，当前为 $PY_VER。"
 
 if [[ "${ASSUME_YES:-0}" != "1" ]]; then

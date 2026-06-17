@@ -31,17 +31,18 @@ TensorRT engine 由 `vsmlrt.Backend.TRT` 自动构建并缓存（首次运行较
 
 > VideoJaNai 的 `backend` 是 **Windows** 便携包，**无法**直接在 Linux 运行。Linux 需用 vs-mlrt 的 Linux x64 release 自建运行时——`setup.sh` 已自动化这一过程。
 
-**不使用 conda**：按 VapourSynth 官方推荐，用 Python 3.12+ venv + `pip install vapoursynth`，源插件用 VSRepo 安装。
+用 VapourSynth 官方推荐的方式：Python 3.12+ 环境 + `pip install vapoursynth`，源插件用 VSRepo 安装。
 
-> **默认安装进“当前已激活的环境”**。`setup.sh` 启动时会打印目标 Python/venv 并**要求输入 `y` 确认**才继续；若未检测到 venv（会污染系统 Python）会额外警告。
+> **默认安装进“当前已激活的环境”**——可以是 **venv 或 conda 环境**。`setup.sh` 启动时打印目标 Python/环境并**要求输入 `y` 确认**才继续；仅当是裸的系统 Python（既非 venv 也非 conda）时才额外警告会污染系统。
 
-前置：自己先建好并激活 venv（Python 3.12+），容器内有 NVIDIA GPU、`curl`。
+前置：自己先建好并激活一个 Python 3.12+ 环境（venv 或 conda 均可），容器内有 NVIDIA GPU、`curl`。
 
 ```bash
-# 1. 自己准备 venv（Python 3.12+）并激活
-python3.12 -m venv ~/vsr-venv && source ~/vsr-venv/bin/activate
+# 1. 准备并激活 Python 3.12+ 环境（二选一）
+python3.12 -m venv ~/vsr-venv && source ~/vsr-venv/bin/activate     # venv
+# conda create -n vsr python=3.12 -y && conda activate vsr          # 或 conda
 
-# 2. 一键搭建运行时（装进当前 venv：VapourSynth/VSRepo/源插件
+# 2. 一键搭建运行时（装进当前环境：VapourSynth/VSRepo/源插件
 #    + 下载 vs-mlrt Linux 插件/trtexec + 模型 + 安装 vsr 本体）
 cd vsr-cli
 bash setup.sh            # 运行时默认装到 /root/autodl-tmp/vsr-runtime
