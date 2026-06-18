@@ -24,42 +24,45 @@ ENCODER_PRESETS: dict[str, str] = {
 
 DEFAULT_ENCODER = "nvenc"
 
-# RealESRGAN model enum names exposed by vsmlrt.RealESRGANModel. The pipeline.vpy
-# resolves these to vsmlrt.RealESRGANModel members by name. Scale noted for the user.
+# RealESRGAN model file names under <models_dir>/RealESRGANv2. The pipeline also
+# accepts absolute paths, relative paths, stems without .onnx, and legacy vsmlrt
+# enum names such as animejanaiV3_HD_L2.
 REALESRGAN_MODELS: dict[str, str] = {
-    "animevideov3": "RealESRGAN animevideo v3 (4x)",
-    "animevideo_xsx2": "RealESRGAN animevideo xs (2x)",
-    "animevideo_xsx4": "RealESRGAN animevideo xs (4x)",
-    "animejanaiV2L1": "AnimeJaNai V2 L1 (2x, light)",
-    "animejanaiV2L2": "AnimeJaNai V2 L2 (2x)",
-    "animejanaiV2L3": "AnimeJaNai V2 L3 (2x, heavy)",
-    "animejanaiV3_HD_L1": "AnimeJaNai V3 HD L1 (2x, light)",
-    "animejanaiV3_HD_L2": "AnimeJaNai V3 HD L2 (2x)",
-    "animejanaiV3_HD_L3": "AnimeJaNai V3 HD L3 (2x, heavy)",
-    "Ani4Kv2_G6i2_Compact": "Ani4K v2 Compact (2x)",
-    "Ani4Kv2_G6i2_UltraCompact": "Ani4K v2 UltraCompact (2x)",
+    "realesr-animevideov3.onnx": "RealESRGAN animevideo v3 (4x)",
+    "RealESRGANv2-animevideo-xsx2.onnx": "RealESRGAN animevideo xs (2x)",
+    "RealESRGANv2-animevideo-xsx4.onnx": "RealESRGAN animevideo xs (4x)",
+    "animejanaiV2L1.onnx": "AnimeJaNai V2 L1 (2x, light)",
+    "animejanaiV2L2.onnx": "AnimeJaNai V2 L2 (2x)",
+    "animejanaiV2L3.onnx": "AnimeJaNai V2 L3 (2x, heavy)",
+    "animejanaiV3-HD-L1.onnx": "AnimeJaNai V3 HD L1 (2x, light)",
+    "animejanaiV3-HD-L2.onnx": "AnimeJaNai V3 HD L2 (2x)",
+    "animejanaiV3-HD-L3.onnx": "AnimeJaNai V3 HD L3 (2x, heavy)",
+    "Ani4Kv2-G6i2-Compact.onnx": "Ani4K v2 Compact (2x)",
+    "Ani4Kv2-G6i2-UltraCompact.onnx": "Ani4K v2 UltraCompact (2x)",
 }
 
-DEFAULT_REALESRGAN_MODEL = "animejanaiV3_HD_L2"
+DEFAULT_REALESRGAN_MODEL = "animejanaiV3-HD-L2.onnx"
 
-# RIFE model enum names exposed by vsmlrt.RIFEModel (subset of common picks).
+# RIFE model file names under <models_dir>/rife. The pipeline also accepts
+# absolute paths, relative paths, stems without .onnx, and legacy enum names
+# such as v4_10.
 RIFE_MODELS: dict[str, str] = {
-    "v4_4": "RIFE v4.4",
-    "v4_6": "RIFE v4.6",
-    "v4_10": "RIFE v4.10",
-    "v4_15": "RIFE v4.15",
-    "v4_18": "RIFE v4.18",
-    "v4_22": "RIFE v4.22",
-    "v4_25": "RIFE v4.25",
-    "v4_26": "RIFE v4.26",
-    "v4_15_lite": "RIFE v4.15 lite (fast)",
-    "v4_25_lite": "RIFE v4.25 lite (fast)",
+    "rife_v4.4.onnx": "RIFE v4.4",
+    "rife_v4.6.onnx": "RIFE v4.6",
+    "rife_v4.10.onnx": "RIFE v4.10",
+    "rife_v4.15.onnx": "RIFE v4.15",
+    "rife_v4.18.onnx": "RIFE v4.18",
+    "rife_v4.22.onnx": "RIFE v4.22",
+    "rife_v4.25.onnx": "RIFE v4.25",
+    "rife_v4.26.onnx": "RIFE v4.26",
+    "rife_v4.15_lite.onnx": "RIFE v4.15 lite (fast)",
+    "rife_v4.25_lite.onnx": "RIFE v4.25 lite (fast)",
 }
 
 # v4_10 is the newest RIFE model shipped in the standard vs-mlrt `models` pack
 # (and even the v16.test1 prerelease `contrib-models` pack tops out here); newer
 # versions like v4.22 are not bundled, so default to one that always extracts.
-DEFAULT_RIFE_MODEL = "v4_10"
+DEFAULT_RIFE_MODEL = "rife_v4.10.onnx"
 
 
 def encoder_args(name: str) -> str:

@@ -35,11 +35,23 @@ VIDEO_EXTS = {".mkv", ".mp4", ".mov", ".m2ts", ".ts", ".avi", ".webm", ".wmv", "
 
 def _add_processing_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--upscale", action="store_true", help="启用 R-ESRGAN 超分")
-    p.add_argument("--model", help=f"超分模型 (默认 {presets.DEFAULT_REALESRGAN_MODEL})")
+    p.add_argument(
+        "--model",
+        help=(
+            "超分模型文件名或路径；相对路径基于 models/RealESRGANv2 "
+            f"(默认 {presets.DEFAULT_REALESRGAN_MODEL})"
+        ),
+    )
     p.add_argument("--pre-resize-factor", type=float, help="超分前缩放百分比 (如 50)")
     p.add_argument("--rife", action="store_true", help="启用 RIFE 插帧")
     p.add_argument("--rife-multi", default="2", help="插帧倍率, 如 2 或 2/1 (默认 2)")
-    p.add_argument("--rife-model", help=f"RIFE 模型 (默认 {presets.DEFAULT_RIFE_MODEL})")
+    p.add_argument(
+        "--rife-model",
+        help=(
+            "RIFE 模型文件名或路径；相对路径基于 models/rife "
+            f"(默认 {presets.DEFAULT_RIFE_MODEL})"
+        ),
+    )
     p.add_argument("--final-resize-height", type=int, help="最终输出高度 (像素)")
     p.add_argument("--encoder", choices=list(presets.ENCODER_PRESETS),
                    help=f"编码预设 (默认 {presets.DEFAULT_ENCODER})")

@@ -47,7 +47,7 @@ class Job:
                 "至少需要开启 --upscale 或 --rife 其一（仅超分 / 仅插帧 / 超分+插帧）"
             )
         if self.upscale and not self.model:
-            raise ValueError("开启超分时必须指定 --model")
+            raise ValueError("开启超分时必须指定 --model 模型文件名或路径")
         if not Path(self.input_path).is_file():
             raise FileNotFoundError(self.input_path)
 

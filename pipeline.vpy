@@ -4,8 +4,8 @@ Run via vspipe, passing parameters with --arg key=value, e.g.:
 
     vspipe -c y4m \
         --arg video_path=/in.mkv \
-        --arg upscale=1 --arg model=animejanaiV3_HD_L2 \
-        --arg rife=1 --arg rife_multi=2 --arg rife_model=v4_10 \
+        --arg upscale=1 --arg model=animejanaiV3-HD-L2.onnx \
+        --arg rife=1 --arg rife_multi=2 --arg rife_model=rife_v4.10.onnx \
         pipeline.vpy -
 
 Builds the processing graph conditionally:
@@ -172,6 +172,200 @@ def _trt_backend():
     )
 
 
+def _unique(items):
+    out = []
+    for item in items:
+        if item not in out:
+            out.append(item)
+    return out
+
+
+def _model_roots(*subdirs):
+    base = models_dir or getattr(vsmlrt, "models_path", "")
+    roots = []
+    if base:
+        for subdir in subdirs:
+            roots.append(os.path.join(base, subdir))
+        roots.append(base)
+    return _unique(roots)
+
+
+def _path_variants(spec, filename_prefix=""):
+    spec = str(spec).strip()
+    dirname = os.path.dirname(spec)
+    basename = os.path.basename(spec)
+    variants = [spec]
+    if filename_prefix and not dirname and not basename.startswith(filename_prefix):
+        variants.append(filename_prefix + spec)
+
+    out = []
+    for variant in variants:
+        out.append(variant)
+        if not os.path.splitext(variant)[1]:
+            out.append(variant + ".onnx")
+    return _unique(out)
+
+
+def _resolve_model_path(spec, subdirs, filename_prefix=""):
+    candidates = []
+    for variant in _path_variants(spec, filename_prefix):
+        expanded = os.path.expanduser(variant)
+        if os.path.isabs(expanded):
+            candidates.append(expanded)
+            continue
+        for root in _model_roots(*subdirs):
+            candidates.append(os.path.join(root, expanded))
+
+    candidates = _unique(candidates)
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+
+    searched = "\n  ".join(candidates) if candidates else "(models_dir is unset)"
+    raise FileNotFoundError(
+        f"pipeline.vpy: model file {spec!r} not found. Searched:\n  {searched}"
+    )
+
+
+def _realesrgan_file(clip, network_path):
+    overlap_w = overlap_h = 8
+    (tile_w, tile_h), (overlap_w, overlap_h) = vsmlrt.calc_tilesize(
+        tiles=None, tilesize=None,
+        width=clip.width, height=clip.height,
+        multiple=1,
+        overlap_w=overlap_w, overlap_h=overlap_h,
+    )
+    backend = vsmlrt.init_backend(
+        backend=_trt_backend(),
+        trt_opt_shapes=(tile_w, tile_h),
+    )
+    return vsmlrt.inference_with_fallback(
+        clips=[clip],
+        network_path=network_path,
+        overlap=(overlap_w, overlap_h),
+        tilesize=(tile_w, tile_h),
+        backend=backend,
+    )
+
+
+def _rife_merge_file(clipa, clipb, mask, network_path, backend):
+    implementation_v2 = os.path.basename(os.path.dirname(network_path)) == "rife_v2"
+    multiple = 1 if implementation_v2 else 32
+    clips = [clipa, clipb, mask]
+    if not implementation_v2:
+        clips.extend(vsmlrt.get_rife_input(clipa))
+
+    (tile_w, tile_h), (overlap_w, overlap_h) = vsmlrt.calc_tilesize(
+        tiles=None, tilesize=None,
+        width=clipa.width, height=clipa.height,
+        multiple=multiple,
+        overlap_w=0, overlap_h=0,
+    )
+    backend = vsmlrt.init_backend(
+        backend=backend,
+        trt_opt_shapes=(tile_w, tile_h),
+    )
+    return vsmlrt.inference_with_fallback(
+        clips=clips,
+        network_path=network_path,
+        overlap=(overlap_w, overlap_h),
+        tilesize=(tile_w, tile_h),
+        backend=backend,
+    )
+
+
+def _rife_file(clip, multi, network_path, backend):
+    gray_format = vs.GRAYS if clip.format.bits_per_sample == 32 else vs.GRAYH
+
+    if int(multi) == multi:
+        multi = int(multi)
+        if multi < 2:
+            raise ValueError("pipeline.vpy: RIFE multi must be at least 2")
+
+        initial = core.std.Interleave([clip] * (multi - 1))
+        terminal = clip.std.DuplicateFrames(frames=clip.num_frames - 1).std.Trim(first=1)
+        terminal = core.std.Interleave([terminal] * (multi - 1))
+        timepoint = core.std.Interleave([
+            clip.std.BlankClip(format=gray_format, color=i / multi, length=1)
+            for i in range(1, multi)
+        ]).std.Loop(clip.num_frames)
+
+        output0 = _rife_merge_file(initial, terminal, timepoint, network_path, backend)
+        clip = vsmlrt.bits_as(clip, output0)
+        initial = core.std.Interleave([clip] * (multi - 1))
+
+        if hasattr(core, "akarin") and hasattr(core.akarin, "Select"):
+            output = core.akarin.Select([output0, initial], initial, "x._SceneChangeNext 1 0 ?")
+        else:
+            def handler(n, f):
+                if f.props.get("_SceneChangeNext"):
+                    return initial
+                return output0
+            output = core.std.FrameEval(output0, handler, initial)
+
+        if multi == 2:
+            res = core.std.Interleave([clip, output])
+        else:
+            res = core.std.Interleave([
+                clip,
+                *(output.std.SelectEvery(cycle=multi - 1, offsets=i) for i in range(multi - 1))
+            ])
+
+        if clip.fps_num != 0 and clip.fps_den != 0:
+            return res.std.AssumeFPS(fpsnum=clip.fps_num * multi, fpsden=clip.fps_den)
+        return res
+
+    if clip.fps_num == 0 or clip.fps_den == 0:
+        src_fps = fractions.Fraction(1)
+    else:
+        src_fps = clip.fps
+
+    dst_fps = src_fps * multi
+    src_frames = clip.num_frames
+    dst_frames = min(int(src_frames * multi), 2 ** 31 - 1)
+    dst_duration = (src_fps / dst_fps).numerator
+    src_duration = (src_fps / dst_fps).denominator
+
+    if not hasattr(core, "akarin") or \
+       not hasattr(core.akarin, "PropExpr") or \
+       not hasattr(core.akarin, "PickFrames"):
+        raise RuntimeError("pipeline.vpy: fractional RIFE multi requires akarin")
+
+    left_indices = []
+    right_indices = []
+    timepoints = []
+    output_indices = []
+    for i in range(dst_frames):
+        current_time = dst_duration * i
+        if current_time % src_duration == 0:
+            output_indices.append(current_time // src_duration)
+        else:
+            left_index = current_time // src_duration
+            if left_index + 1 >= src_frames:
+                output_indices.append(src_frames - 1)
+                break
+            output_indices.append(src_frames + len(timepoints))
+            left_indices.append(left_index)
+            right_indices.append(left_index + 1)
+            left_time = src_duration * left_index
+            timepoints.append((current_time - left_time) / src_duration)
+
+    left_clip = core.akarin.PickFrames(clip, left_indices)
+    right_clip = core.akarin.PickFrames(clip, right_indices)
+    tp_clip = core.std.BlankClip(clip, format=gray_format, length=len(timepoints))
+    tp_clip = tp_clip.akarin.PropExpr(lambda: dict(_tp=timepoints)).akarin.Expr("x._tp")
+
+    output0 = _rife_merge_file(left_clip, right_clip, tp_clip, network_path, backend)
+    clip0 = vsmlrt.bits_as(clip, output0)
+    left0 = vsmlrt.bits_as(left_clip, output0)
+    output = core.akarin.Select([output0, left0], left0, "x._SceneChangeNext 1 0 ?")
+    res = core.akarin.PickFrames(clip0 + output, output_indices)
+
+    if clip.fps_num != 0 and clip.fps_den != 0:
+        return res.std.AssumeFPS(fpsnum=dst_fps.numerator, fpsden=dst_fps.denominator)
+    return res
+
+
 # --- source -----------------------------------------------------------------
 
 def _open_source(path):
@@ -232,16 +426,14 @@ if do_upscale and pre_resize_factor and pre_resize_factor != 100.0:
 # --- super-resolution (R-ESRGAN on TensorRT) -------------------------------
 
 if do_upscale:
-    model_name = _arg("model", "animejanaiV3_HD_L2")
-    try:
-        model = vsmlrt.RealESRGANModel[model_name]
-    except KeyError:
-        valid = ", ".join(vsmlrt.RealESRGANModel.__members__)
-        raise ValueError(
-            f"pipeline.vpy: unknown RealESRGAN model {model_name!r}; valid: {valid}"
-        )
+    model_spec = _arg("model", "animejanaiV3-HD-L2.onnx")
     clip = _to_rgb(clip, vs.RGBH if use_fp16 else vs.RGBS)
-    clip = vsmlrt.RealESRGAN(clip, model=model, backend=_trt_backend())
+    if model_spec in vsmlrt.RealESRGANModel.__members__:
+        model = vsmlrt.RealESRGANModel[model_spec]
+        clip = vsmlrt.RealESRGAN(clip, model=model, backend=_trt_backend())
+    else:
+        network_path = _resolve_model_path(model_spec, ("RealESRGANv2",))
+        clip = _realesrgan_file(clip, network_path)
     clip = _to_yuv(clip)
 
 
@@ -249,14 +441,7 @@ if do_upscale:
 
 if do_rife:
     rife_multi = _arg_fraction("rife_multi", 2)
-    rife_model_name = _arg("rife_model", "v4_10")
-    try:
-        rife_model = vsmlrt.RIFEModel[rife_model_name]
-    except KeyError:
-        valid = ", ".join(vsmlrt.RIFEModel.__members__)
-        raise ValueError(
-            f"pipeline.vpy: unknown RIFE model {rife_model_name!r}; valid: {valid}"
-        )
+    rife_model_spec = _arg("rife_model", "rife_v4.10.onnx")
     rife_clip = _to_rgb(clip, vs.RGBH if use_fp16 else vs.RGBS)
     # vsmlrt.RIFE (v1 implementation) requires the frame dimensions to be a
     # multiple of 32 and does not pad internally — a 4K upscale yields 3840x2160
@@ -267,12 +452,21 @@ if do_rife:
     pad_h = (32 - rife_clip.height % 32) % 32
     if pad_w or pad_h:
         rife_clip = core.std.AddBorders(rife_clip, right=pad_w, bottom=pad_h)
-    rife_clip = vsmlrt.RIFE(
-        rife_clip,
-        multi=rife_multi,
-        model=rife_model,
-        backend=_trt_backend(),
-    )
+    if rife_model_spec in vsmlrt.RIFEModel.__members__:
+        rife_model = vsmlrt.RIFEModel[rife_model_spec]
+        rife_clip = vsmlrt.RIFE(
+            rife_clip,
+            multi=rife_multi,
+            model=rife_model,
+            backend=_trt_backend(),
+        )
+    else:
+        network_path = _resolve_model_path(
+            rife_model_spec,
+            ("rife", "rife_v2"),
+            filename_prefix="rife_",
+        )
+        rife_clip = _rife_file(rife_clip, rife_multi, network_path, _trt_backend())
     if pad_w or pad_h:
         rife_clip = core.std.Crop(rife_clip, right=pad_w, bottom=pad_h)
     clip = _to_yuv(rife_clip)

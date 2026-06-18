@@ -27,16 +27,16 @@ vsr (CLI / TUI)
 
 ```bash
 # 仅超分 (2x)
-vsr run -i in.mkv -o out.mkv --upscale --model animejanaiV3_HD_L2 --encoder nvenc
+vsr run -i in.mkv -o out.mkv --upscale --model animejanaiV3-HD-L2.onnx --encoder nvenc
 
 # 仅插帧 (2x 帧率)
-vsr run -i in.mkv -o out.mkv --rife --rife-multi 2 --rife-model v4_10
+vsr run -i in.mkv -o out.mkv --rife --rife-multi 2 --rife-model rife_v4.10.onnx
 
 # 超分 + 插帧
-vsr run -i in.mkv -o out.mkv --upscale --model animejanaiV3_HD_L2 --rife --rife-multi 2
+vsr run -i in.mkv -o out.mkv --upscale --model animejanaiV3-HD-L2.onnx --rife --rife-multi 2
 
 # 批量处理（递归）
-vsr batch -i ./in_dir -o ./out_dir --recursive --upscale --model animejanaiV3_HD_L2
+vsr batch -i ./in_dir -o ./out_dir --recursive --upscale --model animejanaiV3-HD-L2.onnx
 
 # 交互向导
 vsr
@@ -68,7 +68,7 @@ bash setup.sh            # 默认装到 /root/autodl-tmp/vsr-runtime
 
 # 3. 自检 + 预热 engine
 vsr doctor
-vsr build-engines -i sample.mkv --upscale --model animejanaiV3_HD_L2 --rife --rife-multi 2
+vsr build-engines -i sample.mkv --upscale --model animejanaiV3-HD-L2.onnx --rife --rife-multi 2
 ```
 
 > `setup.sh` 启动时打印目标 Python/环境并要求输入 `y` 确认；仅当是裸的系统 Python（既非 venv 也非 conda）时额外警告。
@@ -94,11 +94,11 @@ vsr build-engines -i sample.mkv --upscale --model animejanaiV3_HD_L2 --rife --ri
 | 参数 | 说明 |
 | --- | --- |
 | `--upscale` | 启用 R-ESRGAN 超分 |
-| `--model` | 超分模型（默认 `animejanaiV3_HD_L2`） |
+| `--model` | 超分模型文件名或路径（默认 `animejanaiV3-HD-L2.onnx`；相对路径基于 `models/RealESRGANv2`） |
 | `--pre-resize-factor` | 超分前缩放百分比（如 `50`） |
 | `--rife` | 启用 RIFE 插帧 |
 | `--rife-multi` | 插帧倍率（如 `2`、`2/1`，默认 `2`） |
-| `--rife-model` | RIFE 模型（默认 `v4_10`） |
+| `--rife-model` | RIFE 模型文件名或路径（默认 `rife_v4.10.onnx`；相对路径基于 `models/rife`，也会查 `models/rife_v2`） |
 | `--final-resize-height` | 最终输出高度（像素） |
 | `--encoder` | 编码预设：`nvenc`(默认) / `x265` / `x264` / `ffv1` |
 | `--ffmpeg-args` | 自定义 ffmpeg 视频参数串，覆盖 `--encoder` |
@@ -118,6 +118,13 @@ vsr build-engines -i sample.mkv --upscale --model animejanaiV3_HD_L2 --rife --ri
 | `--no-fp16` | 禁用 fp16 |
 
 运行 `vsr <子命令> -h` 查看完整选项。
+
+模型参数规则：
+
+- `--model animejanaiV3-HD-L2.onnx` 会查 `<models_dir>/RealESRGANv2/animejanaiV3-HD-L2.onnx`
+- `--rife-model rife_v4.10.onnx` 会查 `<models_dir>/rife/rife_v4.10.onnx`
+- 也可传绝对路径，或相对 `models_dir` 的路径，例如 `--model RealESRGANv2/custom.onnx`
+- 旧的 vs-mlrt enum 名仍兼容，例如 `--model animejanaiV3_HD_L2` / `--rife-model v4_10`
 
 ### 子命令
 
@@ -293,7 +300,7 @@ FORCE_VSMLRT_PY=1 bash setup.sh
 
 ```bash
 rm /root/autodl-tmp/vsr-runtime/vs-plugins/models/RealESRGANv2/*.engine*
-vsr build-engines -i sample.mkv --upscale --model animejanaiV3_HD_L2
+vsr build-engines -i sample.mkv --upscale --model animejanaiV3-HD-L2.onnx
 ```
 
 ### RIFE 新模型不在 latest release
