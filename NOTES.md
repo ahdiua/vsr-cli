@@ -103,6 +103,8 @@ Ubuntu 的 `ffmpeg` 包硬依赖 libsdl2 → 几个 X11 小库，`--no-install-r
 sudo apt purge -y ffmpeg && sudo apt autoremove --purge -y
 ```
 
+`setup.sh` 默认下载 `/root/autodl-tmp/vsr-runtime/ffmpeg-static/bin/ffmpeg` 这类静态构建，不再走 apt。只有设置 `SKIP_STATIC_FFMPEG=1` 时才恢复 PATH/apt fallback。
+
 ### nvenc API 版本兼容
 
 `master`（最新）构建捆绑的 nvenc SDK 可能要求过新的 API（如要求 NVENC API 13.1 / 驱动 610+），在老驱动上 `hevc_nvenc` 会报 `Driver does not support the required nvenc API version`。AutoDL 驱动通常较老（如 580.105.08 = API 13.0），所以选 **n8.1** 这类发布版构建（`ffmpeg-n8.1-...`）而非 master。

@@ -41,6 +41,10 @@
 #   MLRT_TRT_NO_DEPS   install MLRT_TRT_PACKAGE without pip TensorRT deps
 #                      (1=force --no-deps, 0=force pip deps). If unset, it is
 #                      auto-detected: a system TensorRT (apt/tar/NGC) => --no-deps.
+#   VSR_FFMPEG         optional explicit ffmpeg path
+#   VSR_FFMPEG_STATIC_URL static ffmpeg tarball URL
+#   VSR_FFMPEG_STATIC_DIR static ffmpeg install dir
+#   SKIP_STATIC_FFMPEG=1 use PATH/apt ffmpeg instead of the static build
 #   SKIP_VSREPO_FALLBACK=1 never use VSRepo fallback for source filters
 #   VSR_TRTEXEC        optional explicit Linux trtexec path
 #   TENSORRT_HOME      optional TensorRT SDK root (e.g. /usr/src/tensorrt)
@@ -62,6 +66,8 @@ MLRT_TRT_PACKAGE="${MLRT_TRT_PACKAGE:-vapoursynth-mlrt-trt}"
 SEVENZ_THREADS="${SEVENZ_THREADS:-}"
 SKIP_VSMLRT_PY="${SKIP_VSMLRT_PY:-${SKIP_RELEASE_EXTRACT:-0}}"
 SKIP_MODEL_EXTRACT="${SKIP_MODEL_EXTRACT:-${SKIP_RELEASE_EXTRACT:-0}}"
+VSR_FFMPEG_STATIC_URL="${VSR_FFMPEG_STATIC_URL:-https://github.com/ahdiua/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-nonfree-8.1.tar.xz}"
+VSR_FFMPEG_STATIC_DIR="${VSR_FFMPEG_STATIC_DIR:-$RUNTIME_DIR/ffmpeg-static}"
 REPO="AmusementClub/vs-mlrt"
 
 VENV_DIR="$RUNTIME_DIR/venv"
@@ -115,17 +121,28 @@ fi
 
 # --- system deps (curl / 7z / ffmpeg) --------------------------------------
 NEED_APT=()
+NEED_CURL=0
 if [[ "$SKIP_VSMLRT_PY" != "1" || "$SKIP_MODEL_EXTRACT" != "1" ]]; then
+    NEED_CURL=1
+fi
+if [[ -z "${VSR_FFMPEG:-}" && "${SKIP_STATIC_FFMPEG:-0}" != "1" ]]; then
+    NEED_CURL=1
+fi
+if [[ "$NEED_CURL" == "1" ]]; then
     have curl || NEED_APT+=(curl)
 fi
 if [[ "$SKIP_MODEL_EXTRACT" != "1" ]]; then
     { have 7z || have 7za; } || NEED_APT+=(p7zip-full)
 fi
-# Prefer a user-provided ffmpeg (e.g. a static build on the persistent disk) over
-# apt's: VSR_FFMPEG pointing at an executable means we skip apt entirely and avoid
-# dragging in ffmpeg's heavy GUI dependency stack.
+# Default to the project's static ffmpeg build instead of apt's ffmpeg package.
+# The Ubuntu package pulls extra GUI/X11 dependencies; keep apt ffmpeg only as
+# an explicit fallback via SKIP_STATIC_FFMPEG=1.
 if [[ -n "${VSR_FFMPEG:-}" && -x "${VSR_FFMPEG}" ]]; then
     log "Using ffmpeg from VSR_FFMPEG: $VSR_FFMPEG (skipping apt ffmpeg)."
+elif [[ "${SKIP_STATIC_FFMPEG:-0}" != "1" ]]; then
+    have tar || NEED_APT+=(tar)
+    have xz || NEED_APT+=(xz-utils)
+    log "Using static ffmpeg build by default (skipping apt ffmpeg)."
 elif ! have ffmpeg; then
     NEED_APT+=(ffmpeg)
 fi
@@ -154,6 +171,63 @@ if [[ -z "$SEVENZ" && "$SKIP_MODEL_EXTRACT" != "1" ]]; then
     exit 2
 fi
 ARIA2C="$(command -v aria2c || true)"
+
+resolve_ffmpeg_bin() {
+    if [[ -n "${VSR_FFMPEG:-}" ]]; then
+        if [[ ! -x "$VSR_FFMPEG" ]]; then
+            err "VSR_FFMPEG is set but not executable: $VSR_FFMPEG"
+            exit 2
+        fi
+        FFMPEG_BIN="$VSR_FFMPEG"
+        log "ffmpeg: $FFMPEG_BIN (from VSR_FFMPEG)"
+        return 0
+    fi
+
+    if [[ "${SKIP_STATIC_FFMPEG:-0}" == "1" ]]; then
+        FFMPEG_BIN="$(command -v ffmpeg || true)"
+        if [[ -z "$FFMPEG_BIN" ]]; then
+            err "ffmpeg not found on PATH. Unset SKIP_STATIC_FFMPEG to use the static build, or set VSR_FFMPEG."
+            exit 2
+        fi
+        log "ffmpeg: $FFMPEG_BIN (PATH; SKIP_STATIC_FFMPEG=1)"
+        return 0
+    fi
+
+    local ffmpeg_bin="$VSR_FFMPEG_STATIC_DIR/bin/ffmpeg"
+    if [[ ! -x "$ffmpeg_bin" ]]; then
+        local archive_name archive
+        archive_name="${VSR_FFMPEG_STATIC_URL##*/}"
+        archive_name="${archive_name%%\?*}"
+        archive="$DL_DIR/$archive_name"
+
+        if [[ -s "$archive" ]]; then
+            log "Cached static ffmpeg archive: $archive"
+        else
+            log "Downloading static ffmpeg from $VSR_FFMPEG_STATIC_URL"
+            curl -fL --retry 3 -C - --speed-limit 1024 --speed-time 120 \
+                -o "$archive" "$VSR_FFMPEG_STATIC_URL"
+        fi
+
+        mkdir -p "$VSR_FFMPEG_STATIC_DIR"
+        if ! tar -xf "$archive" -C "$VSR_FFMPEG_STATIC_DIR" --strip-components=1; then
+            err "Failed to extract static ffmpeg archive: $archive"
+            exit 2
+        fi
+        chmod +x "$ffmpeg_bin" || true
+    fi
+
+    if [[ ! -x "$ffmpeg_bin" ]]; then
+        err "Static ffmpeg binary not found after extraction: $ffmpeg_bin"
+        exit 2
+    fi
+    if ! "$ffmpeg_bin" -hide_banner -encoders >/dev/null 2>&1; then
+        err "Static ffmpeg exists but failed to run: $ffmpeg_bin"
+        exit 2
+    fi
+
+    FFMPEG_BIN="$ffmpeg_bin"
+    log "ffmpeg: $FFMPEG_BIN (static build)"
+}
 
 # --- 0. confirm target Python environment ----------------------------------
 # Optionally create a fresh venv; otherwise use the ACTIVE environment.
@@ -234,6 +308,8 @@ if [[ "${ASSUME_YES:-0}" != "1" ]]; then
         err "已取消。"; exit 1
     fi
 fi
+
+resolve_ffmpeg_bin
 
 # console scripts (vapoursynth/vsrepo/vspipe) live next to this interpreter
 PYBIN_DIR="$(dirname "$PYTHON")"
@@ -857,11 +933,6 @@ log "Installing vsr CLI into the active environment…"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/vsr"
 mkdir -p "$CONFIG_DIR"
 CONFIG_FILE="$CONFIG_DIR/config.toml"
-if [[ -n "${VSR_FFMPEG:-}" && -x "${VSR_FFMPEG}" ]]; then
-    FFMPEG_BIN="$VSR_FFMPEG"
-else
-    FFMPEG_BIN="$(command -v ffmpeg || echo ffmpeg)"
-fi
 PIPELINE_VPY="$SCRIPT_DIR/pipeline.vpy"
 # trtexec detection (candidate paths, TensorRT version probe, and engine-ABI
 # matching against core.trt) lives in vsr.config — the single source of truth

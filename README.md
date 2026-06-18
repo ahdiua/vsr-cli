@@ -160,6 +160,10 @@ CLI 参数 > 环境变量 > ~/.config/vsr/config.toml > 自动探测
 | `CREATE_VENV=1` | 在 `<runtime>/venv` 新建 venv |
 | `PY_BIN=/path/python` | 指定 Python 解释器 |
 | `VSR_RUNTIME=/path` | 运行时目录 |
+| `VSR_FFMPEG=/path/ffmpeg` | 显式指定 ffmpeg，优先级最高 |
+| `VSR_FFMPEG_STATIC_URL=https://...tar.xz` | 默认 static ffmpeg 下载地址 |
+| `VSR_FFMPEG_STATIC_DIR=/path` | static ffmpeg 解压目录 |
+| `SKIP_STATIC_FFMPEG=1` | 不使用 static build，回退 PATH/apt ffmpeg |
 | `VSMLRT_TAG=v15.x` | vs-mlrt release tag（`prerelease` 从最新预发布拉模型） |
 | `VSMLRT_PY_REF=master` | 拉 `vsmlrt.py` 的 git ref |
 | `VSMLRT_PY_URL=https://...` | 覆盖 `vsmlrt.py` 下载地址 |
@@ -245,19 +249,16 @@ TRT 11.0.0 `+cuda13.2` 构建依赖 CUDA 13 的 `cudart/cublas`，apt 会随 `li
 
 ## ffmpeg 建议
 
-**推荐用静态构建放持久盘，不走 apt**（AutoDL 等反复重置系统盘的环境）：
+`setup.sh` 默认下载并复用静态构建到运行时目录，不再从 apt 安装 ffmpeg：
 
 ```bash
-cd ~/autodl-tmp
-wget https://github.com/ahdiua/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-nonfree-8.1.tar.xz
-tar xf ffmpeg-n8.1-latest-linux64-nonfree-8.1.tar.xz
-export VSR_FFMPEG=~/autodl-tmp/ffmpeg-n8.1-latest-linux64-nonfree-8.1/bin/ffmpeg
-"$VSR_FFMPEG" -hide_banner -encoders | grep nvenc   # 确认有 hevc_nvenc
+bash setup.sh
+/root/autodl-tmp/vsr-runtime/ffmpeg-static/bin/ffmpeg -hide_banner -encoders | grep nvenc
 ```
 
 > **选版本注意驱动兼容**：`master` 构建的 nvenc SDK 可能要求 API 13.1+ / 驱动 610+，AutoDL 驱动通常较老（如 580.x = API 13.0），选 **n8.1** 发布版而非 master。
 
-设置 `VSR_FFMPEG` 后 `setup.sh` 会跳过 apt 安装 ffmpeg 并将路径写入 config。仅在未设 `VSR_FFMPEG` 且 PATH 无 ffmpeg 时才 apt 安装（加 `--no-install-recommends` 裁剪 GUI 依赖）。
+设置 `VSR_FFMPEG` 后 `setup.sh` 会使用该路径并写入 config。只有设置 `SKIP_STATIC_FFMPEG=1` 且 PATH 无 ffmpeg 时，脚本才会回退 apt 安装（加 `--no-install-recommends` 裁剪 GUI 依赖）。
 
 ---
 
