@@ -56,7 +56,7 @@ class RuntimeConfig:
     """Resolved runtime paths and defaults."""
 
     vspipe: str = ""
-    ffmpeg: str = "ffmpeg"
+    ffmpeg: str = ""
     plugins_dir: str = ""
     models_dir: str = ""
     trtexec: str = ""
@@ -184,6 +184,16 @@ def _autodetect_vspipe() -> str | None:
     if cand.is_file():
         return str(cand)
     return _which("vspipe")
+
+
+def _autodetect_ffmpeg() -> str | None:
+    path_hit = _which("ffmpeg")
+    if path_hit:
+        return path_hit
+    system_ffmpeg = Path("/usr/local/bin/ffmpeg")
+    if system_ffmpeg.is_file() and os.access(system_ffmpeg, os.X_OK):
+        return str(system_ffmpeg)
+    return None
 
 
 def _autodetect_models(plugins_dir: str | None) -> str | None:
@@ -469,7 +479,7 @@ def resolve(cfg: RuntimeConfig, **overrides: object) -> RuntimeConfig:
     if not cfg.vspipe:
         cfg.vspipe = _autodetect_vspipe() or ""
     if not cfg.ffmpeg:
-        cfg.ffmpeg = _which("ffmpeg") or "ffmpeg"
+        cfg.ffmpeg = _autodetect_ffmpeg() or "ffmpeg"
     if not cfg.models_dir:
         cfg.models_dir = _autodetect_models(cfg.plugins_dir) or ""
     if not cfg.trtexec:

@@ -103,7 +103,7 @@ Ubuntu 的 `ffmpeg` 包硬依赖 libsdl2 → 几个 X11 小库，`--no-install-r
 sudo apt purge -y ffmpeg && sudo apt autoremove --purge -y
 ```
 
-`setup.sh` 默认下载 `/root/autodl-tmp/vsr-runtime/ffmpeg-static/bin/ffmpeg` 这类静态构建，不再走 apt。只有设置 `SKIP_STATIC_FFMPEG=1` 时才恢复 PATH/apt fallback。
+`setup.sh` 会先复用 PATH 里的 `ffmpeg`。只有 PATH 无 `ffmpeg` 时才默认下载 BtbN n8.1 静态构建并安装到 `/usr/local/bin/ffmpeg`，不再放进 `vsr-runtime`；设置 `SKIP_STATIC_FFMPEG=1` 时不下载 static build，转为 PATH/apt fallback。
 
 ### nvenc API 版本兼容
 

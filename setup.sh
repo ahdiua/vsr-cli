@@ -42,9 +42,9 @@
 #                      (1=force --no-deps, 0=force pip deps). If unset, it is
 #                      auto-detected: a system TensorRT (apt/tar/NGC) => --no-deps.
 #   VSR_FFMPEG         optional explicit ffmpeg path
-#   VSR_FFMPEG_STATIC_URL static ffmpeg tarball URL
-#   VSR_FFMPEG_STATIC_DIR static ffmpeg install dir
-#   SKIP_STATIC_FFMPEG=1 use PATH/apt ffmpeg instead of the static build
+#   VSR_FFMPEG_STATIC_URL static ffmpeg tarball URL to install when PATH lacks ffmpeg
+#   VSR_FFMPEG_INSTALL_DIR install dir for downloaded ffmpeg (default: /usr/local/bin)
+#   SKIP_STATIC_FFMPEG=1 use only PATH/apt ffmpeg; never download static build
 #   SKIP_VSREPO_FALLBACK=1 never use VSRepo fallback for source filters
 #   VSR_TRTEXEC        optional explicit Linux trtexec path
 #   TENSORRT_HOME      optional TensorRT SDK root (e.g. /usr/src/tensorrt)
@@ -66,8 +66,8 @@ MLRT_TRT_PACKAGE="${MLRT_TRT_PACKAGE:-vapoursynth-mlrt-trt}"
 SEVENZ_THREADS="${SEVENZ_THREADS:-}"
 SKIP_VSMLRT_PY="${SKIP_VSMLRT_PY:-${SKIP_RELEASE_EXTRACT:-0}}"
 SKIP_MODEL_EXTRACT="${SKIP_MODEL_EXTRACT:-${SKIP_RELEASE_EXTRACT:-0}}"
-VSR_FFMPEG_STATIC_URL="${VSR_FFMPEG_STATIC_URL:-https://github.com/ahdiua/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-nonfree-8.1.tar.xz}"
-VSR_FFMPEG_STATIC_DIR="${VSR_FFMPEG_STATIC_DIR:-$RUNTIME_DIR/ffmpeg-static}"
+VSR_FFMPEG_STATIC_URL="${VSR_FFMPEG_STATIC_URL:-https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz}"
+VSR_FFMPEG_INSTALL_DIR="${VSR_FFMPEG_INSTALL_DIR:-/usr/local/bin}"
 REPO="AmusementClub/vs-mlrt"
 
 VENV_DIR="$RUNTIME_DIR/venv"
@@ -86,6 +86,17 @@ mkdir -p "$PIP_CACHE_DIR" "$TMPDIR"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 apt_get() { if [[ "${SKIP_APT:-0}" != "1" ]] && have apt-get; then sudo apt-get "$@"; fi; }
+run_privileged() {
+    if [[ "$(id -u)" == "0" ]]; then
+        "$@"
+    else
+        if ! have sudo; then
+            err "sudo not found; cannot install ffmpeg to $VSR_FFMPEG_INSTALL_DIR. Install it manually or set VSR_FFMPEG."
+            exit 2
+        fi
+        sudo "$@"
+    fi
+}
 
 # Detect a system-provided TensorRT (apt/tar/NGC) so we can install the mlrt
 # wheel with --no-deps and avoid pip pulling a second, possibly incompatible
@@ -125,7 +136,8 @@ NEED_CURL=0
 if [[ "$SKIP_VSMLRT_PY" != "1" || "$SKIP_MODEL_EXTRACT" != "1" ]]; then
     NEED_CURL=1
 fi
-if [[ -z "${VSR_FFMPEG:-}" && "${SKIP_STATIC_FFMPEG:-0}" != "1" ]]; then
+if [[ -z "${VSR_FFMPEG:-}" && "${SKIP_STATIC_FFMPEG:-0}" != "1" ]] \
+    && ! have ffmpeg && [[ ! -x "$VSR_FFMPEG_INSTALL_DIR/ffmpeg" ]]; then
     NEED_CURL=1
 fi
 if [[ "$NEED_CURL" == "1" ]]; then
@@ -134,16 +146,21 @@ fi
 if [[ "$SKIP_MODEL_EXTRACT" != "1" ]]; then
     { have 7z || have 7za; } || NEED_APT+=(p7zip-full)
 fi
-# Default to the project's static ffmpeg build instead of apt's ffmpeg package.
-# The Ubuntu package pulls extra GUI/X11 dependencies; keep apt ffmpeg only as
-# an explicit fallback via SKIP_STATIC_FFMPEG=1.
+# Reuse a user-provided, PATH, or already-installed system ffmpeg before
+# downloading the BtbN static build into /usr/local/bin. The Ubuntu package
+# pulls extra GUI/X11 dependencies, so apt ffmpeg is only an explicit fallback
+# via SKIP_STATIC_FFMPEG=1.
 if [[ -n "${VSR_FFMPEG:-}" && -x "${VSR_FFMPEG}" ]]; then
     log "Using ffmpeg from VSR_FFMPEG: $VSR_FFMPEG (skipping apt ffmpeg)."
+elif have ffmpeg; then
+    log "Using ffmpeg from PATH: $(command -v ffmpeg) (skipping static download and apt ffmpeg)."
+elif [[ -x "$VSR_FFMPEG_INSTALL_DIR/ffmpeg" ]]; then
+    log "Using ffmpeg from $VSR_FFMPEG_INSTALL_DIR/ffmpeg (skipping static download and apt ffmpeg)."
 elif [[ "${SKIP_STATIC_FFMPEG:-0}" != "1" ]]; then
     have tar || NEED_APT+=(tar)
     have xz || NEED_APT+=(xz-utils)
-    log "Using static ffmpeg build by default (skipping apt ffmpeg)."
-elif ! have ffmpeg; then
+    log "ffmpeg not found; will install BtbN static ffmpeg into $VSR_FFMPEG_INSTALL_DIR (skipping apt ffmpeg)."
+else
     NEED_APT+=(ffmpeg)
 fi
 if [[ ${#NEED_APT[@]} -gt 0 ]]; then
@@ -183,19 +200,20 @@ resolve_ffmpeg_bin() {
         return 0
     fi
 
-    if [[ "${SKIP_STATIC_FFMPEG:-0}" == "1" ]]; then
-        FFMPEG_BIN="$(command -v ffmpeg || true)"
-        if [[ -z "$FFMPEG_BIN" ]]; then
-            err "ffmpeg not found on PATH. Unset SKIP_STATIC_FFMPEG to use the static build, or set VSR_FFMPEG."
-            exit 2
-        fi
-        log "ffmpeg: $FFMPEG_BIN (PATH; SKIP_STATIC_FFMPEG=1)"
+    FFMPEG_BIN="$(command -v ffmpeg || true)"
+    if [[ -n "$FFMPEG_BIN" ]]; then
+        log "ffmpeg: $FFMPEG_BIN (PATH)"
         return 0
     fi
 
-    local ffmpeg_bin="$VSR_FFMPEG_STATIC_DIR/bin/ffmpeg"
+    local ffmpeg_bin="$VSR_FFMPEG_INSTALL_DIR/ffmpeg"
+    if [[ "${SKIP_STATIC_FFMPEG:-0}" == "1" && ! -x "$ffmpeg_bin" ]]; then
+        err "ffmpeg not found on PATH or at $ffmpeg_bin. Unset SKIP_STATIC_FFMPEG to install the BtbN build, or set VSR_FFMPEG."
+        exit 2
+    fi
+
     if [[ ! -x "$ffmpeg_bin" ]]; then
-        local archive_name archive
+        local archive_name archive extract_dir extracted_ffmpeg
         archive_name="${VSR_FFMPEG_STATIC_URL##*/}"
         archive_name="${archive_name%%\?*}"
         archive="$DL_DIR/$archive_name"
@@ -208,25 +226,36 @@ resolve_ffmpeg_bin() {
                 -o "$archive" "$VSR_FFMPEG_STATIC_URL"
         fi
 
-        mkdir -p "$VSR_FFMPEG_STATIC_DIR"
-        if ! tar -xf "$archive" -C "$VSR_FFMPEG_STATIC_DIR" --strip-components=1; then
+        extract_dir="$(mktemp -d "$TMPDIR/ffmpeg-extract.XXXXXX")"
+        if ! tar -xf "$archive" -C "$extract_dir" --strip-components=1; then
+            rm -rf "$extract_dir"
             err "Failed to extract static ffmpeg archive: $archive"
             exit 2
         fi
-        chmod +x "$ffmpeg_bin" || true
+        extracted_ffmpeg="$extract_dir/bin/ffmpeg"
+        if [[ ! -x "$extracted_ffmpeg" ]]; then
+            rm -rf "$extract_dir"
+            err "Static ffmpeg binary not found in extracted archive: $archive"
+            exit 2
+        fi
+        log "Installing ffmpeg to $ffmpeg_bin"
+        run_privileged install -d "$VSR_FFMPEG_INSTALL_DIR"
+        run_privileged install -m 0755 "$extracted_ffmpeg" "$ffmpeg_bin"
+        rm -rf "$extract_dir"
     fi
 
     if [[ ! -x "$ffmpeg_bin" ]]; then
-        err "Static ffmpeg binary not found after extraction: $ffmpeg_bin"
+        err "ffmpeg binary not found after install: $ffmpeg_bin"
         exit 2
     fi
     if ! "$ffmpeg_bin" -hide_banner -encoders >/dev/null 2>&1; then
-        err "Static ffmpeg exists but failed to run: $ffmpeg_bin"
+        err "Downloaded ffmpeg exists but failed to run: $ffmpeg_bin"
+        err "Check that the archive matches this machine's CPU architecture: $VSR_FFMPEG_STATIC_URL"
         exit 2
     fi
 
     FFMPEG_BIN="$ffmpeg_bin"
-    log "ffmpeg: $FFMPEG_BIN (static build)"
+    log "ffmpeg: $FFMPEG_BIN (system install)"
 }
 
 # --- 0. confirm target Python environment ----------------------------------
