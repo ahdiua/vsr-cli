@@ -155,16 +155,19 @@ num_streams = _arg_int("num_streams", 2)
 use_fp16 = _arg_bool("fp16", True)
 
 
-def _trt_backend():
+def _trt_backend(fp16=None, output_format=None):
+    fp16 = use_fp16 if fp16 is None else fp16
+    if output_format is None:
+        output_format = 1 if fp16 else 0
     return vsmlrt.Backend.TRT(
-        fp16=use_fp16,
+        fp16=fp16,
         # On TensorRT >= 11 the vsmlrt path pre-converts the ONNX to fp16 and
         # requires the engine's input and output formats to be equal. The input
         # format is derived from the clip's bit depth, and we feed RGBH (fp16)
         # whenever fp16 is enabled, so the output format must be fp16 too;
         # otherwise convert_model raises "input format must be equal to output
         # format". (When fp16 is off, vsmlrt skips this path, so 0 is fine.)
-        output_format=1 if use_fp16 else 0,
+        output_format=output_format,
         num_streams=num_streams,
         use_cuda_graph=True,
         builder_optimization_level=5,
@@ -227,7 +230,86 @@ def _resolve_model_path(spec, subdirs, filename_prefix=""):
     )
 
 
-def _realesrgan_file(clip, network_path):
+def _onnx_value_format(value):
+    tensor_type = value.type.tensor_type
+    elem_type = tensor_type.elem_type
+    if elem_type == 10:  # TensorProto.FLOAT16
+        return 1
+    if elem_type == 1:  # TensorProto.FLOAT
+        return 0
+    return None
+
+
+def _onnx_model_info(network_path):
+    try:
+        import onnx
+    except Exception:
+        return None
+
+    try:
+        model = onnx.load(network_path, load_external_data=False)
+    except TypeError:
+        model = onnx.load(network_path)
+    initializer_names = {item.name for item in model.graph.initializer}
+
+    input_formats = [
+        _onnx_value_format(item)
+        for item in model.graph.input
+        if item.name not in initializer_names
+    ]
+    input_formats = [item for item in input_formats if item is not None]
+
+    output_formats = [
+        _onnx_value_format(item)
+        for item in model.graph.output
+    ]
+    output_formats = [item for item in output_formats if item is not None]
+
+    input_format = input_formats[0] if input_formats else None
+    output_format = output_formats[0] if output_formats else input_format
+
+    tensor_types = [item.data_type for item in model.graph.initializer]
+    tensor_types.extend(
+        item.type.tensor_type.elem_type
+        for item in list(model.graph.input) + list(model.graph.output) + list(model.graph.value_info)
+        if item.type.HasField("tensor_type")
+    )
+
+    return {
+        "input_format": input_format,
+        "output_format": output_format,
+        "has_fp16_tensor": 10 in tensor_types,  # TensorProto.FLOAT16
+    }
+
+
+def _custom_model_plan(network_path):
+    info = _onnx_model_info(network_path)
+    if info is None:
+        return vs.RGBH if use_fp16 else vs.RGBS, _trt_backend()
+
+    input_format = info["input_format"]
+    output_format = info["output_format"]
+    preconverted_fp16 = (
+        info["has_fp16_tensor"] or input_format == 1 or output_format == 1
+    )
+
+    if not preconverted_fp16:
+        return vs.RGBH if use_fp16 else vs.RGBS, _trt_backend()
+
+    # A preconverted fp16 ONNX should not go through vsmlrt.convert_model again.
+    if input_format == 1:
+        rgb_format = vs.RGBH
+    elif input_format == 0:
+        rgb_format = vs.RGBS
+    else:
+        rgb_format = vs.RGBH if use_fp16 else vs.RGBS
+
+    if output_format is None:
+        output_format = 1 if rgb_format == vs.RGBH else 0
+    return rgb_format, _trt_backend(fp16=False, output_format=output_format)
+
+
+def _realesrgan_file(clip, network_path, backend):
     overlap_w = overlap_h = 8
     (tile_w, tile_h), (overlap_w, overlap_h) = vsmlrt.calc_tilesize(
         tiles=None, tilesize=None,
@@ -236,7 +318,7 @@ def _realesrgan_file(clip, network_path):
         overlap_w=overlap_w, overlap_h=overlap_h,
     )
     backend = vsmlrt.init_backend(
-        backend=_trt_backend(),
+        backend=backend,
         trt_opt_shapes=(tile_w, tile_h),
     )
     return vsmlrt.inference_with_fallback(
@@ -427,13 +509,15 @@ if do_upscale and pre_resize_factor and pre_resize_factor != 100.0:
 
 if do_upscale:
     model_spec = _arg("model", "animejanaiV3-HD-L2.onnx")
-    clip = _to_rgb(clip, vs.RGBH if use_fp16 else vs.RGBS)
     if model_spec in vsmlrt.RealESRGANModel.__members__:
         model = vsmlrt.RealESRGANModel[model_spec]
+        clip = _to_rgb(clip, vs.RGBH if use_fp16 else vs.RGBS)
         clip = vsmlrt.RealESRGAN(clip, model=model, backend=_trt_backend())
     else:
         network_path = _resolve_model_path(model_spec, ("RealESRGANv2",))
-        clip = _realesrgan_file(clip, network_path)
+        rgb_format, backend = _custom_model_plan(network_path)
+        clip = _to_rgb(clip, rgb_format)
+        clip = _realesrgan_file(clip, network_path, backend)
     clip = _to_yuv(clip)
 
 
@@ -442,7 +526,16 @@ if do_upscale:
 if do_rife:
     rife_multi = _arg_fraction("rife_multi", 2)
     rife_model_spec = _arg("rife_model", "rife_v4.10.onnx")
-    rife_clip = _to_rgb(clip, vs.RGBH if use_fp16 else vs.RGBS)
+    if rife_model_spec in vsmlrt.RIFEModel.__members__:
+        rife_clip = _to_rgb(clip, vs.RGBH if use_fp16 else vs.RGBS)
+    else:
+        network_path = _resolve_model_path(
+            rife_model_spec,
+            ("rife", "rife_v2"),
+            filename_prefix="rife_",
+        )
+        rgb_format, backend = _custom_model_plan(network_path)
+        rife_clip = _to_rgb(clip, rgb_format)
     # vsmlrt.RIFE (v1 implementation) requires the frame dimensions to be a
     # multiple of 32 and does not pad internally — a 4K upscale yields 3840x2160
     # and 2160 % 32 != 0, which raises "tile size must be divisible by 32". Pad
@@ -461,12 +554,12 @@ if do_rife:
             backend=_trt_backend(),
         )
     else:
-        network_path = _resolve_model_path(
-            rife_model_spec,
-            ("rife", "rife_v2"),
-            filename_prefix="rife_",
+        rife_clip = _rife_file(
+            rife_clip,
+            rife_multi,
+            network_path,
+            backend,
         )
-        rife_clip = _rife_file(rife_clip, rife_multi, network_path, _trt_backend())
     if pad_w or pad_h:
         rife_clip = core.std.Crop(rife_clip, right=pad_w, bottom=pad_h)
     clip = _to_yuv(rife_clip)

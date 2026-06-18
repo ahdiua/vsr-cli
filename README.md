@@ -125,6 +125,7 @@ vsr build-engines -i sample.mkv --upscale --model animejanaiV3-HD-L2.onnx --rife
 - `--rife-model rife_v4.10.onnx` 会查 `<models_dir>/rife/rife_v4.10.onnx`
 - 也可传绝对路径，或相对 `models_dir` 的路径，例如 `--model RealESRGANv2/custom.onnx`
 - 旧的 vs-mlrt enum 名仍兼容，例如 `--model animejanaiV3_HD_L2` / `--rife-model v4_10`
+- 自定义 `.onnx` 若已是 fp16 模型，pipeline 会按模型 I/O 类型直接构建 TensorRT engine，不会再次调用 vsmlrt 的 fp16 转换
 
 ### 子命令
 
