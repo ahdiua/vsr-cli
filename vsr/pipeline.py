@@ -9,6 +9,7 @@ RunUpscaleSingle.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -116,6 +117,28 @@ def build_vspipe_env(cfg: RuntimeConfig) -> dict[str, str]:
     return env_with_runtime_libs(cfg.plugins_dir)
 
 
+def build_ffmpeg_env(cfg: RuntimeConfig) -> dict[str, str] | None:
+    """Environment for the ffmpeg subprocess.
+
+    Returns None to inherit the parent environment unchanged (the common case).
+    When ``cfg.nvenc_fix`` points at the nvidia-gpu-enumeration LD_PRELOAD shim,
+    it is prepended to LD_PRELOAD *for ffmpeg only* — this fixes NVENC
+    "unsupported device" in containers where the host exposes GPUs not assigned
+    to us (NVIDIA driver 570+ bug). Scoping it to ffmpeg avoids preloading the
+    shim into vspipe/python/every other process, which a global ``export
+    LD_PRELOAD`` would do.
+    """
+    if not cfg.nvenc_fix:
+        return None
+    if not Path(cfg.nvenc_fix).is_file():
+        console.print(f"[yellow]nvenc-fix library not found, ignoring: {cfg.nvenc_fix}[/yellow]")
+        return None
+    env = os.environ.copy()
+    existing = env.get("LD_PRELOAD", "").strip()
+    env["LD_PRELOAD"] = f"{cfg.nvenc_fix} {existing}".strip() if existing else cfg.nvenc_fix
+    return env
+
+
 def run_job(cfg: RuntimeConfig, job: Job, quiet: bool = False) -> int:
     """Run vspipe | ffmpeg for one job. Returns 0 on success."""
     job.validate()
@@ -136,7 +159,7 @@ def run_job(cfg: RuntimeConfig, job: Job, quiet: bool = False) -> int:
 
     vspipe = subprocess.Popen(vspipe_cmd, stdout=subprocess.PIPE, env=vspipe_env)
     assert vspipe.stdout is not None
-    ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=vspipe.stdout)
+    ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=vspipe.stdout, env=build_ffmpeg_env(cfg))
     # allow vspipe to receive SIGPIPE if ffmpeg exits
     vspipe.stdout.close()
 
@@ -180,7 +203,7 @@ def build_engines(cfg: RuntimeConfig, job: Job) -> int:
 
     vspipe = subprocess.Popen(vspipe_cmd, stdout=subprocess.PIPE, env=vspipe_env)
     assert vspipe.stdout is not None
-    ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=vspipe.stdout)
+    ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=vspipe.stdout, env=build_ffmpeg_env(cfg))
     vspipe.stdout.close()
     ffmpeg_ret = ffmpeg.wait()
     vspipe_ret = vspipe.wait()

@@ -66,6 +66,11 @@ class RuntimeConfig:
     num_streams: int = 2
     device_id: int = 0
     fp16: bool = True
+    # LD_PRELOAD shim that filters the GPU list NVENC sees, for containers where
+    # the host exposes GPUs not assigned to this container (NVIDIA driver 570+ bug
+    # → hevc_nvenc "unsupported device"). Path to libnvenc_fix.so from
+    # flexgrip/nvidia-gpu-enumeration. Empty = disabled. Injected into ffmpeg only.
+    nvenc_fix: str = ""
 
     @classmethod
     def from_file(cls, path: Path | None = None) -> "RuntimeConfig":
@@ -474,6 +479,7 @@ def resolve(cfg: RuntimeConfig, **overrides: object) -> RuntimeConfig:
     cfg.models_dir = cfg.models_dir or os.environ.get("VSR_MODELS", "")
     cfg.trtexec = cfg.trtexec or os.environ.get("VSR_TRTEXEC", "")
     cfg.pipeline_vpy = cfg.pipeline_vpy or os.environ.get("VSR_PIPELINE", "")
+    cfg.nvenc_fix = cfg.nvenc_fix or os.environ.get("VSR_NVENC_FIX", "")
 
     # auto-detect
     if not cfg.vspipe:
@@ -527,5 +533,13 @@ def diagnose(cfg: RuntimeConfig) -> list[tuple[str, bool, str]]:
 
     nvsmi = _which("nvidia-smi")
     checks.append(("nvidia-smi", bool(nvsmi), nvsmi or "not found"))
+
+    if cfg.nvenc_fix:
+        fix_ok = Path(cfg.nvenc_fix).is_file()
+        checks.append((
+            "nvenc fix (LD_PRELOAD)",
+            fix_ok,
+            cfg.nvenc_fix if fix_ok else f"{cfg.nvenc_fix} (not found)",
+        ))
 
     return checks

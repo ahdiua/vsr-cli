@@ -69,6 +69,9 @@ def _add_runtime_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--num-streams", type=int, help="TensorRT 并行流数")
     p.add_argument("--no-fp16", dest="fp16", action="store_false", default=None,
                    help="禁用 fp16")
+    p.add_argument("--nvenc-fix",
+                   help="NVENC GPU 枚举修复库 libnvenc_fix.so 路径 (LD_PRELOAD 注入 ffmpeg; "
+                        "容器内 hevc_nvenc 报 unsupported device 时使用)")
 
 
 def _load_cfg(args: argparse.Namespace) -> RuntimeConfig:
@@ -84,6 +87,7 @@ def _load_cfg(args: argparse.Namespace) -> RuntimeConfig:
         num_streams=getattr(args, "num_streams", None),
         fp16=getattr(args, "fp16", None),
         encoder=getattr(args, "encoder", None),
+        nvenc_fix=getattr(args, "nvenc_fix", None),
     )
     return resolve(cfg, **overrides)
 

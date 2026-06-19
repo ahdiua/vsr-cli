@@ -158,7 +158,7 @@ vsr build-engines -i sample.mkv --upscale --model animejanaiV3-HD-L2.onnx --rife
 CLI 参数 > 环境变量 > ~/.config/vsr/config.toml > 自动探测
 ```
 
-环境变量：`VSR_VSPIPE` / `VSR_FFMPEG` / `VSR_PLUGINS` / `VSR_MODELS` / `VSR_TRTEXEC` / `VSR_PIPELINE`
+环境变量：`VSR_VSPIPE` / `VSR_FFMPEG` / `VSR_PLUGINS` / `VSR_MODELS` / `VSR_TRTEXEC` / `VSR_PIPELINE` / `VSR_NVENC_FIX`
 
 ### setup.sh 环境变量
 
@@ -279,6 +279,24 @@ bash setup.sh
 ### trtexec 版本不匹配
 
 `trtexec` 需与 `core.trt` 使用同一 TensorRT engine ABI。如 `core.trt` 用 TRT 11.0 但 `/usr/src/tensorrt/bin/trtexec` 是 10.7，生成的 engine 无法反序列化。`vsr doctor` 会标记不匹配。用 `VSR_TRTEXEC` / `--trtexec` 指向正确版本。
+
+### 容器内 `hevc_nvenc` 报 `OpenEncodeSessionEx failed: unsupported device` / `No capable devices found`
+
+NVIDIA 驱动 **570+ 在多卡宿主机上的 bug**：容器里的 NVENC 会拿到宿主机**全部** GPU 的列表，但只能访问分配给本容器的那块，初始化即崩——即使 CUDA / TensorRT 推理一切正常（它们走的是另一条枚举路径）。常见于 AutoDL 等共享 GPU 容器。
+
+修复用 [flexgrip/nvidia-gpu-enumeration](https://github.com/flexgrip/nvidia-gpu-enumeration) 的 `LD_PRELOAD` 垫片（拦截 `ioctl`，把 GPU 列表过滤成容器实际可见的设备）：
+
+```bash
+# 1. 在容器内编译垫片
+gcc -shared -fPIC -O2 -o /opt/libnvenc_fix.so nvenc_fix.c -ldl
+
+# 2. 指给 vsr —— 只注入到 ffmpeg 子进程，不污染全局环境
+vsr run -i in.mkv -o out.mkv --upscale --model X.onnx \
+  --encoder nvenc --nvenc-fix /opt/libnvenc_fix.so
+# 或: export VSR_NVENC_FIX=/opt/libnvenc_fix.so
+```
+
+vsr 仅把该库注入 ffmpeg 的 `LD_PRELOAD`（不会加到 vspipe / python 上）。`vsr doctor` 在 `nvenc_fix` 配置后会显示其状态。先用 `ffmpeg -f lavfi -i testsrc2=s=1280x720 -t1 -c:v hevc_nvenc -f null -` 验证垫片是否生效；若环境根本未开放 NVENC（`echo $NVIDIA_DRIVER_CAPABILITIES` 不含 `video`/`all`），垫片无效，只能改用软件编码 `--encoder x265`。
 
 ### `Invalid TensorFormat fp16:chw`（TRT 11 构建失败）
 
