@@ -1032,7 +1032,7 @@ fi
         printf 'trtexec = "%s"\n' "$TRTEXEC_BIN"
     fi
     printf 'encoder = "nvenc"\n'
-    printf 'num_streams = 2\n'
+    printf 'num_streams = 4\n'
     printf 'device_id = 0\n'
     printf 'fp16 = true\n'
 } > "$CONFIG_FILE"

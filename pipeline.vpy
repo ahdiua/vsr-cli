@@ -152,7 +152,7 @@ elif plugins_dir:
     vsmlrt.models_path = os.path.join(plugins_dir, "models")
 
 device_id = _arg_int("device_id", 0)
-num_streams = _arg_int("num_streams", 2)
+num_streams = _arg_int("num_streams", 4)
 use_fp16 = _arg_bool("fp16", True)
 
 

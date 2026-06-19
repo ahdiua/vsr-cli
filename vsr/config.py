@@ -63,7 +63,7 @@ class RuntimeConfig:
     pipeline_vpy: str = ""
     # defaults
     encoder: str = presets.DEFAULT_ENCODER
-    num_streams: int = 2
+    num_streams: int = 4
     # VapourSynth worker threads. 0 = auto: pipeline.vpy detects the container's
     # cgroup CPU quota / affinity and sets core.num_threads accordingly, instead
     # of VS's default os.cpu_count() (the *host* core count in a container, which
