@@ -67,6 +67,9 @@ def _add_runtime_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--pipeline-vpy", help="pipeline.vpy 路径")
     p.add_argument("--device-id", type=int, help="GPU 设备号")
     p.add_argument("--num-streams", type=int, help="TensorRT 并行流数")
+    p.add_argument("--num-threads", type=int,
+                   help="VapourSynth 工作线程数 (默认 0=按容器 cgroup 配额自动探测; "
+                        "容器内 vs 误用宿主机核数导致线程过载时手动指定)")
     p.add_argument("--no-fp16", dest="fp16", action="store_false", default=None,
                    help="禁用 fp16")
     p.add_argument("--nvenc-fix",
@@ -85,6 +88,7 @@ def _load_cfg(args: argparse.Namespace) -> RuntimeConfig:
         pipeline_vpy=getattr(args, "pipeline_vpy", None),
         device_id=getattr(args, "device_id", None),
         num_streams=getattr(args, "num_streams", None),
+        num_threads=getattr(args, "num_threads", None),
         fp16=getattr(args, "fp16", None),
         encoder=getattr(args, "encoder", None),
         nvenc_fix=getattr(args, "nvenc_fix", None),

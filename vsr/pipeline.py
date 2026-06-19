@@ -63,6 +63,8 @@ def _vpy_args(cfg: RuntimeConfig, job: Job) -> list[str]:
         "num_streams": cfg.num_streams,
         "fp16": int(cfg.fp16),
     }
+    if cfg.num_threads:  # 0 = let pipeline.vpy auto-detect from cgroup
+        args["num_threads"] = cfg.num_threads
     if cfg.plugins_dir:
         args["plugins_dir"] = cfg.plugins_dir
     if cfg.models_dir:

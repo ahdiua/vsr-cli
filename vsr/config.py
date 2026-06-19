@@ -64,6 +64,11 @@ class RuntimeConfig:
     # defaults
     encoder: str = presets.DEFAULT_ENCODER
     num_streams: int = 2
+    # VapourSynth worker threads. 0 = auto: pipeline.vpy detects the container's
+    # cgroup CPU quota / affinity and sets core.num_threads accordingly, instead
+    # of VS's default os.cpu_count() (the *host* core count in a container, which
+    # oversubscribes and thrashes). Set a positive value to override.
+    num_threads: int = 0
     device_id: int = 0
     fp16: bool = True
     # LD_PRELOAD shim that filters the GPU list NVENC sees, for containers where
@@ -480,6 +485,13 @@ def resolve(cfg: RuntimeConfig, **overrides: object) -> RuntimeConfig:
     cfg.trtexec = cfg.trtexec or os.environ.get("VSR_TRTEXEC", "")
     cfg.pipeline_vpy = cfg.pipeline_vpy or os.environ.get("VSR_PIPELINE", "")
     cfg.nvenc_fix = cfg.nvenc_fix or os.environ.get("VSR_NVENC_FIX", "")
+    if not cfg.num_threads:
+        env_threads = os.environ.get("VSR_NUM_THREADS")
+        if env_threads:
+            try:
+                cfg.num_threads = int(env_threads)
+            except ValueError:
+                pass
 
     # auto-detect
     if not cfg.vspipe:

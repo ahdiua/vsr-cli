@@ -155,6 +155,49 @@ num_streams = _arg_int("num_streams", 2)
 use_fp16 = _arg_bool("fp16", True)
 
 
+def _effective_cpu_count():
+    """CPU count this container may actually use.
+
+    VapourSynth's default thread count is ``os.cpu_count()``, which inside a
+    container returns the *host* core count (e.g. 256). When the container is
+    cgroup-limited to a fraction of that (e.g. an 18-core quota), VS spawns far
+    more worker threads than there are usable cores, and they thrash on the CPU
+    — which starves the GPU (utilisation oscillates 10–90%) and tanks throughput.
+    Honour the cgroup CPU quota (v2 ``cpu.max``, then v1 cfs quota) and the CPU
+    affinity mask, falling back to ``os.cpu_count()``.
+    """
+    limits = []
+    try:  # cgroup v2
+        with open("/sys/fs/cgroup/cpu.max") as fh:
+            quota, period = fh.read().split()[:2]
+            if quota != "max" and int(period) > 0:
+                limits.append(max(1, round(int(quota) / int(period))))
+    except (OSError, ValueError):
+        pass
+    try:  # cgroup v1
+        with open("/sys/fs/cgroup/cpu/cpu.cfs_quota_us") as fh:
+            quota = int(fh.read())
+        with open("/sys/fs/cgroup/cpu/cpu.cfs_period_us") as fh:
+            period = int(fh.read())
+        if quota > 0 and period > 0:
+            limits.append(max(1, quota // period))
+    except (OSError, ValueError):
+        pass
+    try:  # CPU affinity mask (cpuset)
+        limits.append(len(os.sched_getaffinity(0)))
+    except (AttributeError, OSError):
+        pass
+    limits.append(os.cpu_count() or 1)
+    return min(limits)
+
+
+num_threads = _arg_int("num_threads")
+if not num_threads or num_threads <= 0:
+    num_threads = _effective_cpu_count()
+if num_threads and num_threads > 0:
+    core.num_threads = num_threads
+
+
 def _trt_backend(fp16=None, output_format=None):
     fp16 = use_fp16 if fp16 is None else fp16
     if output_format is None:
