@@ -13,7 +13,11 @@ import shlex
 # name -> ffmpeg "-c:v ..." argument string (without -max_interleave_delta).
 ENCODER_PRESETS: dict[str, str] = {
     # NVIDIA hardware HEVC (default) — fast, 10-bit.
-    "nvenc": "hevc_nvenc -preset p7 -profile:v main10 -b:v 50M",
+    # p5 over p7: NVENC is the pipeline bottleneck for 4K 10-bit (p7≈49 vs
+    # p5≈59 fps), and p5's quality is effectively indistinguishable here.
+    # split_encode_mode=forced slices the stream across the GPU's NVENC engines
+    # (free ~+11% on this box, quality-neutral).
+    "nvenc": "hevc_nvenc -preset p5 -profile:v main10 -split_encode_mode forced -b:v 50M",
     # Software HEVC — high quality, slow.
     "x265": 'libx265 -crf 16 -preset slow -x265-params "sao=0:bframes=8:psy-rd=1.5:psy-rdoq=2:aq-mode=3:ref=6"',
     # Software H.264.
