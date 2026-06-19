@@ -48,11 +48,8 @@
 #   SKIP_VSREPO_FALLBACK=1 never use VSRepo fallback for source filters
 #   SKIP_AKARIN=1      skip installing the akarin plugin (RIFE then falls back to
 #                      a slow per-frame Python callback)
-#   AKARIN_REPO        GitHub repo for the akarin plugin
-#                      (default: AkarinVS/vapoursynth-plugin)
-#   AKARIN_TAG         akarin release tag (default: latest)
-#   AKARIN_SO_URL      direct URL to a libakarin.so or a Linux build archive
-#                      (overrides the GitHub release lookup)
+#   AKARIN_PIP_PACKAGE pip package providing the akarin plugin
+#                      (default: vapoursynth-akarin)
 #   VSR_TRTEXEC        optional explicit Linux trtexec path
 #   TENSORRT_HOME      optional TensorRT SDK root (e.g. /usr/src/tensorrt)
 #   SKIP_VSMLRT_PY=1   skip deploying vsmlrt.py; requires an existing copy
@@ -76,9 +73,7 @@ SKIP_MODEL_EXTRACT="${SKIP_MODEL_EXTRACT:-${SKIP_RELEASE_EXTRACT:-0}}"
 VSR_FFMPEG_STATIC_URL="${VSR_FFMPEG_STATIC_URL:-https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz}"
 VSR_FFMPEG_INSTALL_DIR="${VSR_FFMPEG_INSTALL_DIR:-/usr/local/bin}"
 REPO="AmusementClub/vs-mlrt"
-AKARIN_REPO="${AKARIN_REPO:-AkarinVS/vapoursynth-plugin}"
-AKARIN_TAG="${AKARIN_TAG:-latest}"
-AKARIN_ASSET_PATTERN="${AKARIN_ASSET_PATTERN:-(linux|amd64|x86_64).*\\.(tar|tar\\..*|tgz|7z|zip)$|libakarin\\.so$}"
+AKARIN_PIP_PACKAGE="${AKARIN_PIP_PACKAGE:-vapoursynth-akarin}"
 
 VENV_DIR="$RUNTIME_DIR/venv"
 PLUGINS_DIR="$RUNTIME_DIR/vs-plugins"
@@ -896,92 +891,34 @@ download_and_extract() {
 # vs. interpolated frame per frame. With akarin that decision is a native
 # expression (akarin.Select); without it the pipeline falls back to
 # std.FrameEval + a per-frame Python callback, which the GIL serialises and
-# which tanks RIFE throughput. Drop libakarin.so into PLUGINS_DIR (pipeline.vpy
-# explicitly loads plugins from there).
+# which tanks RIFE throughput. The vapoursynth-akarin pip wheel ships the plugin
+# (manylinux, bundled LLVM) and autoloads it, same as the lsmas source wheel.
+akarin_available() {
+    "$PYTHON" - <<'PY' >/dev/null 2>&1
+import sys
+from vapoursynth import core
+sys.exit(0 if hasattr(core, "akarin") and hasattr(core.akarin, "Select") else 1)
+PY
+}
 install_akarin() {
     if [[ "${SKIP_AKARIN:-0}" == "1" ]]; then
         log "SKIP_AKARIN=1: skipping akarin plugin install."
         return 0
     fi
-    if "$PYTHON" - <<'PY' >/dev/null 2>&1
-import sys
-from vapoursynth import core
-sys.exit(0 if hasattr(core, "akarin") and hasattr(core.akarin, "Select") else 1)
-PY
-    then
-        log "akarin already available; skipping download."
+    if akarin_available; then
+        log "akarin already available; skipping install."
         return 0
     fi
-
-    local url="${AKARIN_SO_URL:-}"
-    if [[ -z "$url" ]]; then
-        local api auth=()
-        [[ -n "${GITHUB_TOKEN:-}" ]] && auth=(-H "Authorization: Bearer $GITHUB_TOKEN")
-        case "$AKARIN_TAG" in
-            latest) api="https://api.github.com/repos/$AKARIN_REPO/releases/latest" ;;
-            *)      api="https://api.github.com/repos/$AKARIN_REPO/releases/tags/$AKARIN_TAG" ;;
-        esac
-        url="$(curl -fsSL "${auth[@]}" "$api" \
-            | AKARIN_ASSET_PATTERN="$AKARIN_ASSET_PATTERN" "$PYTHON" -c '
-import json, os, re, sys
-pat = re.compile(os.environ["AKARIN_ASSET_PATTERN"], re.I)
-d = json.load(sys.stdin)
-cands = [a["browser_download_url"] for a in d.get("assets", []) if pat.search(a["name"])]
-print(cands[0] if cands else "")
-')" || { err "Failed to query akarin release ($AKARIN_REPO @ $AKARIN_TAG)."; return 1; }
-    fi
-    if [[ -z "$url" ]]; then
-        err "No matching akarin Linux asset in $AKARIN_REPO ($AKARIN_TAG)."
-        err "Set AKARIN_SO_URL to a libakarin.so or a Linux build archive and re-run."
+    log "pip install $AKARIN_PIP_PACKAGE (akarin: fast RIFE scene-change select)…"
+    if ! "$PYTHON" -m pip install --upgrade "$AKARIN_PIP_PACKAGE"; then
+        err "Could not pip install $AKARIN_PIP_PACKAGE; RIFE will use the slow Python fallback."
         return 1
     fi
-
-    local name out d=""
-    name="${url##*/}"; name="${name%%\?*}"
-    out="$DL_DIR/$name"
-    [[ -s "$out" ]] || download_asset "akarin: $name" "$url" "$out"
-
-    local so=""
-    case "$name" in
-        *.so)
-            so="$out" ;;
-        *.7z|*.7z.001|*.zip)
-            [[ -n "$SEVENZ" ]] || { err "7z/7za not found to extract $name."; return 1; }
-            d="$(mktemp -d "$TMPDIR/akarin.XXXXXX")"
-            if ! "$SEVENZ" x -y -o"$d" "$out" >/dev/null 2>&1; then
-                err "Failed to extract $name."; rm -rf "$d"; return 1
-            fi
-            so="$(find "$d" \( -name 'libakarin.so' -o -name 'akarin.so' \) | head -n1)" ;;
-        *.tar|*.tar.*|*.tgz)
-            d="$(mktemp -d "$TMPDIR/akarin.XXXXXX")"
-            if ! tar -xf "$out" -C "$d" >/dev/null 2>&1; then
-                err "Failed to extract $name."; rm -rf "$d"; return 1
-            fi
-            so="$(find "$d" \( -name 'libakarin.so' -o -name 'akarin.so' \) | head -n1)" ;;
-        *) err "Unknown akarin asset type: $name"; return 1 ;;
-    esac
-
-    if [[ -z "$so" || ! -f "$so" ]]; then
-        err "libakarin.so not found inside $name."
-        [[ -n "$d" ]] && rm -rf "$d"
-        return 1
-    fi
-    install -m 0755 "$so" "$PLUGINS_DIR/libakarin.so"
-    [[ -n "$d" ]] && rm -rf "$d"
-    log "Installed libakarin.so -> $PLUGINS_DIR"
-
-    if "$PYTHON" - "$PLUGINS_DIR/libakarin.so" <<'PY' >/dev/null 2>&1
-import sys
-from vapoursynth import core
-core.std.LoadPlugin(path=sys.argv[1])
-sys.exit(0 if hasattr(core, "akarin") and hasattr(core.akarin, "Select") else 1)
-PY
-    then
-        log "akarin loads OK."
+    if akarin_available; then
+        log "akarin available via $AKARIN_PIP_PACKAGE."
     else
-        err "libakarin.so installed but failed to load — it usually needs the LLVM runtime."
-        err "Install the matching libLLVM (e.g. 'sudo apt-get install -y libllvm15' or libllvm14),"
-        err "then re-run 'vsr doctor'. Or set AKARIN_SO_URL to a statically-linked build."
+        err "$AKARIN_PIP_PACKAGE installed but core.akarin is not available — check VapourSynth plugin autoload (run 'vsr doctor')."
+        return 1
     fi
 }
 install_akarin || err "akarin install failed; RIFE will use the slow Python fallback. Continuing."
