@@ -6,7 +6,7 @@
 # one stream across both engines. This sweeps the modes and reports fps; on
 # failure it prints ffmpeg's error (so we see whether the GPU/args reject it).
 #
-# Usage:   bash bench_split.sh [INPUT]
+# Usage:   bash benchmarks/bench_split.sh [INPUT]
 # Env overrides: MODEL PD FRAMES NUM_STREAMS TRTEXEC NVENC_FIX PIX_FMT
 #                PRESET MODES VSPIPE FFMPEG
 set -uo pipefail
@@ -22,10 +22,11 @@ PIX_FMT="${PIX_FMT:-p010le}"
 PRESET="${PRESET:-p6}"
 MODES="${MODES:-disabled auto forced 2 3}"
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VPY="$HERE/pipeline.vpy"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+VPY="$REPO_ROOT/pipeline.vpy"
 if [[ -z "${VSPIPE:-}" ]]; then
-  if [[ -x "$HERE/venv/bin/vspipe" ]]; then VSPIPE="$HERE/venv/bin/vspipe"; else VSPIPE="vspipe"; fi
+  if [[ -x "$REPO_ROOT/venv/bin/vspipe" ]]; then VSPIPE="$REPO_ROOT/venv/bin/vspipe"; else VSPIPE="vspipe"; fi
 fi
 FFMPEG="${FFMPEG:-/usr/local/bin/ffmpeg}"
 command -v "$FFMPEG" >/dev/null 2>&1 || FFMPEG="ffmpeg"

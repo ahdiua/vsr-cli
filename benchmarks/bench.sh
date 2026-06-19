@@ -12,7 +12,7 @@
 # to the null muxer, varying only the NVENC preset, so it measures the encoder
 # ceiling. Compare the numbers: the lowest fps is your wall.
 #
-# Usage:   bash bench.sh [INPUT]
+# Usage:   bash benchmarks/bench.sh [INPUT]
 # Env overrides: MODEL PD FRAMES NUM_STREAMS THREADS TRTEXEC NVENC_FIX
 #                PIX_FMT VSPIPE FFMPEG
 set -uo pipefail
@@ -27,10 +27,11 @@ TRTEXEC="${TRTEXEC:-/usr/src/tensorrt/bin/trtexec}"
 NVENC_FIX="${NVENC_FIX:-/opt/libnvenc_fix.so}"
 PIX_FMT="${PIX_FMT:-p010le}"
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VPY="$HERE/pipeline.vpy"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+VPY="$REPO_ROOT/pipeline.vpy"
 if [[ -z "${VSPIPE:-}" ]]; then
-  if [[ -x "$HERE/venv/bin/vspipe" ]]; then VSPIPE="$HERE/venv/bin/vspipe"; else VSPIPE="vspipe"; fi
+  if [[ -x "$REPO_ROOT/venv/bin/vspipe" ]]; then VSPIPE="$REPO_ROOT/venv/bin/vspipe"; else VSPIPE="vspipe"; fi
 fi
 FFMPEG="${FFMPEG:-/usr/local/bin/ffmpeg}"
 command -v "$FFMPEG" >/dev/null 2>&1 || FFMPEG="ffmpeg"
