@@ -451,12 +451,34 @@ def _rife_file(clip, multi, network_path, backend):
 # --- source -----------------------------------------------------------------
 
 def _open_source(path):
-    """Open the source, preferring lsmas then ffms2."""
-    if hasattr(core, "lsmas"):
-        return core.lsmas.LWLibavSource(source=path)
-    if hasattr(core, "ffms2"):
-        return core.ffms2.Source(source=path)
-    raise RuntimeError("pipeline.vpy: no source plugin found (need lsmas or ffms2)")
+    """Open the source, preferring lsmas, then ffms2, then bestsource.
+
+    The path is resolved to an absolute path first: L-SMASH-Works writes/reuses
+    its ``.lwi`` index next to the source, and a relative path makes lsmas treat
+    an index that was built from an absolute path as stale and rebuild it — slow,
+    and flaky on overlay/fuse mounts (e.g. AutoDL's data disk), where the rebuild
+    can fail outright. Absolute paths keep the index reuse deterministic.
+
+    lsmas is tried first, but unlike a plain missing-plugin check a *runtime*
+    failure (index construction errors, unreadable container, etc.) now falls
+    through to the next source plugin instead of aborting the whole pipeline.
+    """
+    path = os.path.abspath(path)
+    errors = []
+    for ns, fn, kw in (
+        ("lsmas", "LWLibavSource", {"source": path}),
+        ("ffms2", "Source", {"source": path}),
+        ("bs", "VideoSource", {"source": path}),
+    ):
+        plugin = getattr(core, ns, None)
+        if plugin is None:
+            continue
+        try:
+            return getattr(plugin, fn)(**kw)
+        except vs.Error as exc:
+            errors.append(f"{ns}: {exc}")
+    detail = "; ".join(errors) if errors else "no source plugin found (need lsmas, ffms2, or bestsource)"
+    raise RuntimeError(f"pipeline.vpy: could not open source {path!r}: {detail}")
 
 
 clip = _open_source(video_path)
