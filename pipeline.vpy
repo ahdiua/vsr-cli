@@ -97,7 +97,8 @@ _PLUGIN_PREFIXES = ("libvstrt", "libvsort", "libvsov", "libvsncnn",
                     "vstrt", "vsort", "vsov", "vsncnn",
                     "libffms2", "ffms2",
                     "liblsmashsource", "libvslsmashsource", "lsmas",
-                    "libbestsource", "bestsource", "libbs")
+                    "libbestsource", "bestsource", "libbs",
+                    "libakarin", "akarin")
 _PLUGIN_SUFFIXES = (".so",)
 _MLRT_NAMESPACES = ("trt", "trt_rtx", "ort", "ov", "ncnn", "migx")
 
@@ -589,6 +590,12 @@ if do_upscale:
 # --- frame interpolation (RIFE on TensorRT) --------------------------------
 
 if do_rife:
+    if not (hasattr(core, "akarin") and hasattr(core.akarin, "Select")):
+        sys.stderr.write(
+            "pipeline.vpy: WARNING: akarin plugin not found — RIFE scene-change "
+            "handling falls back to a per-frame Python callback (GIL-serialized, "
+            "much slower). Install libakarin.so into plugins_dir (run setup.sh).\n"
+        )
     rife_multi = _arg_fraction("rife_multi", 2)
     rife_model_spec = _arg("rife_model", "rife_v4.10.onnx")
     if rife_model_spec in vsmlrt.RIFEModel.__members__:

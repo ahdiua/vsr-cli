@@ -541,6 +541,14 @@ def diagnose(cfg: RuntimeConfig) -> list[tuple[str, bool, str]]:
     trt_ok, trt_detail = _probe_vapoursynth_namespace(cfg, "trt")
     checks.append(("core.trt", trt_ok, trt_detail))
 
+    akarin_ok, akarin_detail = _probe_vapoursynth_namespace(cfg, "akarin")
+    checks.append((
+        "akarin (RIFE 必备)",
+        akarin_ok,
+        akarin_detail if akarin_ok
+        else f"缺失 — RIFE 插帧会回退到逐帧 Python 回调(GIL 串行,很慢);运行 setup.sh 安装 ({akarin_detail})",
+    ))
+
     checks.append(("trtexec", *trtexec_compatibility(cfg)))
 
     nvsmi = _which("nvidia-smi")
