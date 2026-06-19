@@ -559,6 +559,20 @@ def _to_yuv(c):
     )
 
 
+def _ensure_rgb(c, fmt):
+    """Return `c` as RGB in `fmt`.
+
+    If `c` is already RGB (e.g. straight out of the upscaler when upscale+rife
+    are chained), only adjust the pixel format/precision — a cheap same-size
+    convert — instead of a full YUV<->RGB matrix conversion. This lets the
+    upscale->RIFE handoff skip the redundant 4K RGB->YUV->RGB round-trip, which
+    on CPU-bound boxes is a large chunk of per-frame cost.
+    """
+    if c.format.color_family == vs.RGB:
+        return c if c.format.id == fmt else core.resize.Bicubic(c, format=fmt)
+    return _to_rgb(c, fmt)
+
+
 # --- optional pre-upscale resize -------------------------------------------
 
 pre_resize_factor = _arg_float("pre_resize_factor")  # percent, e.g. 50.0
@@ -577,14 +591,17 @@ if do_upscale:
     model_spec = _arg("model", "animejanaiV3-HD-L2.onnx")
     if model_spec in vsmlrt.RealESRGANModel.__members__:
         model = vsmlrt.RealESRGANModel[model_spec]
-        clip = _to_rgb(clip, vs.RGBH if use_fp16 else vs.RGBS)
+        clip = _ensure_rgb(clip, vs.RGBH if use_fp16 else vs.RGBS)
         clip = vsmlrt.RealESRGAN(clip, model=model, backend=_trt_backend())
     else:
         network_path = _resolve_model_path(model_spec, ("RealESRGANv2",))
         rgb_format, backend = _custom_model_plan(network_path)
-        clip = _to_rgb(clip, rgb_format)
+        clip = _ensure_rgb(clip, rgb_format)
         clip = _realesrgan_file(clip, network_path, backend)
-    clip = _to_yuv(clip)
+    # Leave the clip in RGB when RIFE follows so the upscale->RIFE handoff skips
+    # the redundant 4K RGB->YUV->RGB round-trip; convert back only at the end.
+    if not do_rife:
+        clip = _to_yuv(clip)
 
 
 # --- frame interpolation (RIFE on TensorRT) --------------------------------
@@ -599,7 +616,7 @@ if do_rife:
     rife_multi = _arg_fraction("rife_multi", 2)
     rife_model_spec = _arg("rife_model", "rife_v4.10.onnx")
     if rife_model_spec in vsmlrt.RIFEModel.__members__:
-        rife_clip = _to_rgb(clip, vs.RGBH if use_fp16 else vs.RGBS)
+        rife_clip = _ensure_rgb(clip, vs.RGBH if use_fp16 else vs.RGBS)
     else:
         network_path = _resolve_model_path(
             rife_model_spec,
@@ -607,7 +624,7 @@ if do_rife:
             filename_prefix="rife_",
         )
         rgb_format, backend = _custom_model_plan(network_path)
-        rife_clip = _to_rgb(clip, rgb_format)
+        rife_clip = _ensure_rgb(clip, rgb_format)
     # vsmlrt.RIFE (v1 implementation) requires the frame dimensions to be a
     # multiple of 32 and does not pad internally — a 4K upscale yields 3840x2160
     # and 2160 % 32 != 0, which raises "tile size must be divisible by 32". Pad
