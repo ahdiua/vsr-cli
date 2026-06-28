@@ -12,8 +12,8 @@
 #      vs-mlrt TensorRT filter wheel (vapoursynth-mlrt-trt); then run
 #      `vapoursynth config` (+ conda libpython fallback + register-install)
 #      to set up plugin autoload
-#   2. verify a source plugin is present (pip wheel; VSRepo only as fallback)
-#   3. deploy vsmlrt.py (local checkout / git ref / release archive)
+#   2. verify a source plugin is present (from the pip wheel)
+#   3. deploy vsmlrt.py (local checkout / git ref)
 #   4. RealESRGAN + RIFE model packs
 #   5. install the vsr CLI itself + write config.toml
 #
@@ -35,7 +35,6 @@
 #   VSMLRT_PY_URL      full URL override for vsmlrt.py (default: derived from REF)
 #   FORCE_VSMLRT_PY=1  re-fetch vsmlrt.py from git even if a copy already exists
 #   MODEL_PACKS        model asset regexes (default: "^models\\. ^contrib-models\\.")
-#   SOURCE_PLUGIN      VSRepo fallback source plugin id(s) (default: "lsmas ffms2")
 #   SOURCE_PIP_PACKAGES pip packages for source filters (default: vapoursynth-lsmas)
 #   MLRT_TRT_PACKAGE   pip package for the TensorRT VS filter
 #   MLRT_TRT_NO_DEPS   install MLRT_TRT_PACKAGE without pip TensorRT deps
@@ -45,7 +44,6 @@
 #   VSR_FFMPEG_STATIC_URL static ffmpeg tarball URL to install when PATH lacks ffmpeg
 #   VSR_FFMPEG_INSTALL_DIR install dir for downloaded ffmpeg (default: /usr/local/bin)
 #   SKIP_STATIC_FFMPEG=1 use only PATH/apt ffmpeg; never download static build
-#   SKIP_VSREPO_FALLBACK=1 never use VSRepo fallback for source filters
 #   SKIP_AKARIN=1      skip installing the akarin plugin (RIFE then falls back to
 #                      a slow per-frame Python callback)
 #   AKARIN_PIP_PACKAGE pip package providing the akarin plugin
@@ -64,7 +62,6 @@ set -euo pipefail
 RUNTIME_DIR="${1:-${VSR_RUNTIME:-/root/autodl-tmp/vsr-runtime}}"
 VSMLRT_TAG="${VSMLRT_TAG:-latest}"
 MODEL_PACKS="${MODEL_PACKS:-^models\\. ^contrib-models\\.}"
-SOURCE_PLUGIN="${SOURCE_PLUGIN:-lsmas ffms2}"
 SOURCE_PIP_PACKAGES="${SOURCE_PIP_PACKAGES:-vapoursynth-lsmas}"
 MLRT_TRT_PACKAGE="${MLRT_TRT_PACKAGE:-vapoursynth-mlrt-trt}"
 SEVENZ_THREADS="${SEVENZ_THREADS:-}"
@@ -345,7 +342,7 @@ fi
 
 resolve_ffmpeg_bin
 
-# console scripts (vapoursynth/vsrepo/vspipe) live next to this interpreter
+# console scripts (vapoursynth/vspipe) live next to this interpreter
 PYBIN_DIR="$(dirname "$PYTHON")"
 run_script() {  # run a console script from the interpreter's bin dir, fall back to PATH
     local name="$1"; shift
@@ -496,37 +493,6 @@ PY
     log "VapourSynth config: $config_path"
     log "VSSCRIPT_PATH: $VSSCRIPT_PATH"
     log "Python symbols: $python_symbol_path"
-}
-
-ensure_python_user_site_dir() {
-    local user_site
-
-    user_site="$("$PYTHON" - <<'PY'
-import site
-
-print(site.getusersitepackages())
-PY
-)"
-    if [[ -n "$user_site" ]]; then
-        mkdir -p "$user_site"
-    fi
-}
-
-run_vsrepo_install() {
-    local package="$1"
-    local output
-
-    if ! output="$(run_script vsrepo install "$package" 2>&1)"; then
-        printf '%s\n' "$output"
-        return 1
-    fi
-
-    printf '%s\n' "$output"
-    if printf '%s\n' "$output" | grep -qiE 'No binaries available|[1-9][0-9]* packages failed'; then
-        return 1
-    fi
-
-    return 0
 }
 
 probe_source_filter() {
@@ -724,30 +690,16 @@ VSPIPE_BIN="$PYBIN_DIR/vspipe"
 [[ -n "$VSPIPE_BIN" && -x "$VSPIPE_BIN" ]] || err "vspipe not found next to $PYTHON — some VapourSynth wheels omit it; check the install."
 log "vspipe: $VSPIPE_BIN"
 
-# --- 2. source plugin check; VSRepo only as fallback ------------------------
-SRC_OK=0
+# --- 2. source plugin check -------------------------------------------------
+# lsmas/ffms2 come from the SOURCE_PIP_PACKAGES wheel (vapoursynth-lsmas) and
+# autoload. We only verify the filter loaded — there is no VSRepo fallback
+# anymore (VSRepo is a Windows-oriented manager and routinely has no Linux
+# binaries; the pip wheel supersedes it).
 if SOURCE_AVAILABLE="$(probe_source_filter)"; then
     log "Source plugin available: $SOURCE_AVAILABLE"
-    SRC_OK=1
-elif [[ "${SKIP_VSREPO_FALLBACK:-0}" == "1" ]]; then
-    err "No source plugin detected after pip install, and SKIP_VSREPO_FALLBACK=1."
 else
-    log "No pip/autoloaded source plugin detected; trying VSRepo fallback: $SOURCE_PLUGIN"
-    "$PYTHON" -m pip install vsrepo
-    ensure_python_user_site_dir
-    run_script vsrepo update || err "'vsrepo update' failed (continuing)."
-    for sp in $SOURCE_PLUGIN; do
-        if run_vsrepo_install "$sp"; then
-            log "VSRepo source plugin available: $sp"
-            SRC_OK=1
-            break
-        else
-            err "VSRepo could not install '$sp' on this platform — trying next."
-        fi
-    done
-fi
-if [[ "$SRC_OK" != "1" ]]; then
-    err "No source plugin detected. Install vapoursynth-lsmas or ffms2 before running vsr."
+    err "No source plugin detected after 'pip install $SOURCE_PIP_PACKAGES'."
+    err "Install vapoursynth-lsmas (or ffms2) into this environment before running vsr."
 fi
 
 # --- GitHub release asset helpers ------------------------------------------
@@ -960,11 +912,13 @@ elif [[ -f "$SCRIPT_DIR/../vs-mlrt/scripts/vsmlrt.py" ]]; then
 elif [[ -f "$PLUGINS_DIR/vsmlrt.py" && "${FORCE_VSMLRT_PY:-0}" != "1" && "${FORCE_RELEASE_EXTRACT:-0}" != "1" ]]; then
     log "Existing vsmlrt.py found (no local checkout); set FORCE_VSMLRT_PY=1 to refresh from $VSMLRT_PY_REF."
 else
-    # No local checkout: pull the (TRT-11-aware) script from git, falling back to
-    # the release archive only if the network fetch fails.
+    # No local checkout: pull the (TRT-11-aware) script from git. We deliberately
+    # do NOT fall back to the vs-mlrt release archive — its bundled vsmlrt.py lags
+    # the plugin and emits TRT-10-only trtexec args that TRT 11 rejects.
     fetch_vsmlrt_py || {
-        log "git fetch failed; falling back to vs-mlrt release archive for vsmlrt.py."
-        download_and_extract 'vsmlrt\.py|scripts' "$PLUGINS_DIR" || true
+        err "Failed to fetch vsmlrt.py from $VSMLRT_PY_URL."
+        err "Check the network / VSMLRT_PY_REF, or drop a vsmlrt.py into $PLUGINS_DIR and re-run with SKIP_VSMLRT_PY=1."
+        exit 2
     }
 fi
 
