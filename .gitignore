@@ -9,6 +9,9 @@ dist/
 venv/
 
 # Runtime / config (machine-specific)
+# setup.sh installs the venv, plugins, models and downloads here by default
+# (in-repo so it can be captured in an image snapshot); never commit it.
+vsr-runtime/
 config.toml
 *.engine
 *.engine.cache

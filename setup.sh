@@ -19,7 +19,8 @@
 #
 # Usage:   bash setup.sh [RUNTIME_DIR]
 # Env overrides:
-#   VSR_RUNTIME        runtime dir (default: /root/autodl-tmp/vsr-runtime)
+#   VSR_RUNTIME        runtime dir (default: <repo>/vsr-runtime, next to this
+#                      script, so it is captured in an image snapshot)
 #   PY_BIN             python interpreter to use (default: active `python`)
 #   ASSUME_YES=1       skip the confirmation prompt (non-interactive)
 #   CREATE_VENV=1      create+use a fresh venv at <runtime>/venv instead of
@@ -59,7 +60,12 @@
 #   SKIP_APT=1         do not use apt at all (assume deps already present)
 set -euo pipefail
 
-RUNTIME_DIR="${1:-${VSR_RUNTIME:-/root/autodl-tmp/vsr-runtime}}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Default the runtime (venv, plugins, models, downloads) to a folder INSIDE the
+# repo checkout so a fully configured system can be captured when you snapshot a
+# custom image. /root/autodl-tmp is a separate data mount that is NOT included
+# when an AutoDL image is saved, so we deliberately do not default there.
+RUNTIME_DIR="${1:-${VSR_RUNTIME:-$SCRIPT_DIR/vsr-runtime}}"
 VSMLRT_TAG="${VSMLRT_TAG:-latest}"
 MODEL_PACKS="${MODEL_PACKS:-^models\\. ^contrib-models\\.}"
 SOURCE_PIP_PACKAGES="${SOURCE_PIP_PACKAGES:-vapoursynth-lsmas}"
@@ -76,7 +82,6 @@ VENV_DIR="$RUNTIME_DIR/venv"
 PLUGINS_DIR="$RUNTIME_DIR/vs-plugins"
 MODELS_DIR="$PLUGINS_DIR/models"
 DL_DIR="$RUNTIME_DIR/downloads"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 log() { printf '\033[1;36m[setup]\033[0m %s\n' "$*"; }
 err() { printf '\033[1;31m[setup:error]\033[0m %s\n' "$*" >&2; }
